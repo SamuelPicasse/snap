@@ -27,7 +27,12 @@ enum Exporter {
         let pixelsPerMeter = UInt32((72 * outScale / 0.0254).rounded())
 
         let truecolor = ctx.makeImage().flatMap { truecolorPNG($0, dpi: 72 * outScale) }
-        let indexed = indexedPNG(rgba: rgba, width: width, height: height, pixelsPerMeter: pixelsPerMeter)
+        if Settings.lossless { return truecolor }
+        // The screenshot card in output pixels; the palette should be spent there, not on the background gradient.
+        let content = Renderer.layout(capture, annotations, style).content
+        let important = CGRect(x: (content.minX - bounds.minX) * outScale, y: (content.minY - bounds.minY) * outScale,
+                               width: content.width * outScale, height: content.height * outScale)
+        let indexed = indexedPNG(rgba: rgba, width: width, height: height, important: important, pixelsPerMeter: pixelsPerMeter)
         switch (indexed, truecolor) {
         case let (i?, t?): return i.count < t.count ? i : t
         default: return indexed ?? truecolor
@@ -46,30 +51,54 @@ enum Exporter {
 
     // MARK: Palette (libimagequant + hand-written PNG)
 
-    private static func indexedPNG(rgba: Data, width: Int, height: Int, pixelsPerMeter: UInt32) -> Data? {
+    private static func indexedPNG(rgba: Data, width: Int, height: Int, important: CGRect, pixelsPerMeter: UInt32) -> Data? {
         guard let attr = liq_attr_create() else { return nil }
         defer { liq_attr_destroy(attr) }
         // Min 70 / max 95: if it can't look near-identical with 256 colors, give up and use truecolor.
         liq_set_quality(attr, 70, 95)
         liq_set_speed(attr, 4)
 
+        // Weight palette selection towards the screenshot itself: text anti-aliasing needs its gray levels
+        // far more than a smooth background gradient does.
+        var importance = [UInt8](repeating: 4, count: width * height)
+        let r = important.integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        if !r.isNull {
+            for y in Int(r.minY)..<Int(r.maxY) {
+                importance.replaceSubrange((y * width + Int(r.minX))..<(y * width + Int(r.maxX)),
+                                           with: repeatElement(255, count: Int(r.width)))
+            }
+        }
+
         return rgba.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Data? in
             guard let image = liq_image_create_rgba(attr, buffer.baseAddress!, Int32(width), Int32(height), 0) else { return nil }
             defer { liq_image_destroy(image) }
+            liq_image_set_importance_map(image, &importance, importance.count, LIQ_COPY_PIXELS)
 
             var result: OpaquePointer?
             guard liq_image_quantize(image, attr, &result) == LIQ_OK, let result else { return nil }
             defer { liq_result_destroy(result) }
-            // Light dithering: smooth gradients without speckling text and UI edges.
-            liq_set_dithering_level(result, 0.5)
+            func remap(dither: Float) -> ([UInt8], [liq_color])? {
+                liq_set_dithering_level(result, dither)
+                var indices = [UInt8](repeating: 0, count: width * height)
+                guard liq_write_remapped_image(result, image, &indices, indices.count) == LIQ_OK,
+                      let palettePointer = liq_get_palette(result) else { return nil }
+                var palette = palettePointer.pointee
+                let count = Int(palette.count)
+                return (indices, withUnsafeBytes(of: &palette.entries) { Array($0.bindMemory(to: liq_color.self).prefix(count)) })
+            }
 
-            var indices = [UInt8](repeating: 0, count: width * height)
-            guard liq_write_remapped_image(result, image, &indices, indices.count) == LIQ_OK,
-                  let palettePointer = liq_get_palette(result) else { return nil }
-
-            var palette = palettePointer.pointee
-            let count = Int(palette.count)
-            let colors = withUnsafeBytes(of: &palette.entries) { Array($0.bindMemory(to: liq_color.self).prefix(count)) }
+            // Dithering smooths gradients but roughens text edges. Remap twice with the same palette:
+            // undithered for the screenshot itself, dithered for the background around it.
+            guard let (sharp, colors) = remap(dither: 0) else { return nil }
+            var indices = sharp
+            if r != CGRect(x: 0, y: 0, width: width, height: height), let (dithered, colors2) = remap(dither: 1),
+               colors2.map({ [$0.r, $0.g, $0.b, $0.a] }) == colors.map({ [$0.r, $0.g, $0.b, $0.a] }) {
+                indices = dithered
+                for y in Int(r.minY)..<Int(r.maxY) {
+                    let row = (y * width + Int(r.minX))..<(y * width + Int(r.maxX))
+                    indices.replaceSubrange(row, with: sharp[row])
+                }
+            }
             return encodeIndexed(width: width, height: height, indices: indices, palette: colors, pixelsPerMeter: pixelsPerMeter)
         }
     }

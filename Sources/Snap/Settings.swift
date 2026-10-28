@@ -38,6 +38,12 @@ enum Settings {
         set { defaults.set(newValue, forKey: "retina") }
     }
 
+    /// Skip palette compression: every pixel exact, files ~2–3× larger.
+    static var lossless: Bool {
+        get { defaults.bool(forKey: "lossless") }
+        set { defaults.set(newValue, forKey: "lossless") }
+    }
+
     static var saveFolder: URL {
         get {
             if let path = defaults.string(forKey: "saveFolder") { return URL(fileURLWithPath: path) }

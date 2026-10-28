@@ -42,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let standard = NSMenuItem(title: "1× Resolution (smaller)", action: #selector(setStandard), keyEquivalent: "")
         standard.state = Settings.retina ? .off : .on
         menu.addItem(standard)
+        let lossless = NSMenuItem(title: "Lossless (sharper, larger files)", action: #selector(toggleLossless), keyEquivalent: "")
+        lossless.state = Settings.lossless ? .on : .off
+        menu.addItem(lossless)
         menu.addItem(.separator())
 
         menu.addItem(NSMenuItem(title: "Save Folder: \(Settings.saveFolder.lastPathComponent)…", action: #selector(chooseFolder), keyEquivalent: ""))
@@ -61,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func setRetina() { Settings.retina = true }
     @objc private func setStandard() { Settings.retina = false }
+    @objc private func toggleLossless() { Settings.lossless.toggle() }
 
     @objc private func chooseFolder() {
         let panel = NSOpenPanel()
