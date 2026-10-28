@@ -31,4 +31,6 @@ One-time setup:
 
 - Output is a palette PNG via libimagequant (vendored static lib in `Vendor/`, GPL-3) when smaller, else a regular PNG. Retina images carry 144 dpi so they display at the right size.
 - `Snap --compress in.png out.png [scale]` runs the exporter on an existing file (writes `out.png` and `out@1x.png`).
+- `open ~/Applications/Snap.app --args --open image.png [scale]` opens an existing image in the editor.
+- App icon: `swift Scripts/make-icon.swift` regenerates `Resources/AppIcon.icns`.
 - To update the vendored lib: `brew upgrade libimagequant` and copy `libimagequant.a` + `libimagequant.h` into `Vendor/libimagequant/`.

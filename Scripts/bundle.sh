@@ -13,6 +13,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Snap "$APP/Contents/MacOS/Snap"
 strip -x "$APP/Contents/MacOS/Snap"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/"  # regenerate with: swift Scripts/make-icon.swift
 
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -22,6 +23,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleIdentifier</key><string>local.sammy.snap</string>
     <key>CFBundleName</key><string>Snap</string>
     <key>CFBundleExecutable</key><string>Snap</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>

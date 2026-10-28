@@ -12,13 +12,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "Snap")
+        statusItem.button?.image = Icons.menuBar
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
 
         hotKey = HotKey(keyCode: UInt32(kVK_ANSI_3), modifiers: UInt32(cmdKey | shiftKey), id: 1) { [weak self] in
             MainActor.assumeIsolated { self?.capture() }
+        }
+
+        // `open Snap.app --args --open image.png [scale]`: annotate an existing image.
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--open"), i + 1 < args.count,
+           let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: args[i + 1]) as CFURL, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            let scale = i + 2 < args.count ? CGFloat(Double(args[i + 2]) ?? 2) : 2
+            openEditor(Capture(image: image, scale: scale))
         }
     }
 
