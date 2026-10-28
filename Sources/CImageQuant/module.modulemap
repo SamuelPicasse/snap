@@ -1,0 +1,5 @@
+module CImageQuant [system] {
+    header "../../Vendor/libimagequant/include/libimagequant.h"
+    link "imagequant"
+    export *
+}
