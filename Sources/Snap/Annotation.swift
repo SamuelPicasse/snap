@@ -25,6 +25,30 @@ struct Annotation {
         }
     }
 
+    /// Whether a click at `p` grabs this mark. Lines and boxes only on their stroke, so you can still
+    /// start drawing inside a box.
+    func hit(_ p: CGPoint, tolerance t: CGFloat) -> Bool {
+        let reach = stroke.width / 2 + t
+        switch tool {
+        case .line, .arrow:
+            let d = CGPoint(x: end.x - start.x, y: end.y - start.y)
+            let len2 = d.x * d.x + d.y * d.y
+            let u = len2 == 0 ? 0 : max(0, min(1, ((p.x - start.x) * d.x + (p.y - start.y) * d.y) / len2))
+            return hypot(p.x - (start.x + u * d.x), p.y - (start.y + u * d.y)) <= reach
+        case .box:
+            return rect.insetBy(dx: -reach, dy: -reach).contains(p) && !rect.insetBy(dx: reach, dy: reach).contains(p)
+        case .redact, .text:
+            return bounds.insetBy(dx: -t, dy: -t).contains(p)
+        }
+    }
+
+    func moved(by dx: CGFloat, _ dy: CGFloat) -> Annotation {
+        var a = self
+        a.start = CGPoint(x: start.x + dx, y: start.y + dy)
+        a.end = CGPoint(x: end.x + dx, y: end.y + dy)
+        return a
+    }
+
     var isEmpty: Bool {
         switch tool {
         case .text: return text.trimmingCharacters(in: .whitespaces).isEmpty

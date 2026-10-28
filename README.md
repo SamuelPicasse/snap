@@ -23,9 +23,10 @@ One-time setup:
 | [ / ] | Thinner / thicker |
 | Shift (while dragging) | 45° lines, square boxes |
 | ⌘Z / ⌘⇧Z | Undo / redo |
-| Delete | Remove last mark |
+| Click a mark | Select it; drag to move, 1–6 / [ ] to restyle, Esc to deselect |
+| Delete | Remove the selected mark (or the last one) |
 | ⌘C / ⌘S | Copy / save to the save folder, then close |
-| Esc | Discard |
+| Esc | Close (menu bar → Reopen Last Screenshot, or launch Snap again, brings it back with its marks) |
 
 ## Notes
 

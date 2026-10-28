@@ -5,7 +5,8 @@ import AppKit
 @MainActor
 final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
     var onClose: (() -> Void)?
-    private let capture: Capture
+    let capture: Capture
+    var annotations: [Annotation] { canvas.annotations }
     private let window: EditorWindow
     private let canvas: CanvasView
     private let sidebar = NSVisualEffectView()
@@ -26,7 +27,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
     private let balanceToggle = NSButton(checkboxWithTitle: "Balance margins", target: nil, action: nil)
     private var style: Beautify
 
-    init(capture: Capture) {
+    init(capture: Capture, annotations: [Annotation] = []) {
         self.capture = capture
         style = Settings.beautify
 
@@ -48,7 +49,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         window.toolbarStyle = .unified
         window.appearance = NSAppearance(named: .darkAqua)
 
-        canvas = CanvasView(capture: capture, style: style)
+        canvas = CanvasView(capture: capture, style: style, annotations: annotations)
         canvas.frame = NSRect(origin: .zero, size: canvasSize)
         sidebar.frame = NSRect(x: canvasSize.width, y: 0, width: Self.sidebarWidth, height: canvasSize.height)
         sidebar.material = .sidebar
@@ -88,7 +89,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
 
     func show() {
         NSApp.activate(ignoringOtherApps: true)
-        window.center()
+        if !window.isVisible { window.center() }
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(canvas)
     }

@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var selection: SelectionController?
     private var editors: [EditorWindowController] = []
     private var replacingEditor = false
+    /// The last screenshot and its marks, kept after the editor closes so an accidental Esc or
+    /// close can be undone. Stored as PNG: a cropped CGImage would keep the whole frozen screen alive.
+    private var last: (png: Data, scale: CGFloat, annotations: [Annotation])?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -39,6 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let capture = NSMenuItem(title: "Capture Area", action: #selector(captureFromMenu), keyEquivalent: "3")
         capture.keyEquivalentModifierMask = [.command, .shift]
         menu.addItem(capture)
+        let reopen = NSMenuItem(title: "Reopen Last Screenshot", action: last == nil ? nil : #selector(reopenLast), keyEquivalent: "")
+        menu.addItem(reopen)
         if hotKey?.registered != true {
             let warning = NSMenuItem(title: "⚠︎ ⌘⇧3 is taken — disable it in Keyboard Shortcuts", action: #selector(openKeyboardSettings), keyEquivalent: "")
             menu.addItem(warning)
@@ -139,14 +144,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func openEditor(_ capture: Capture) {
-        let editor = EditorWindowController(capture: capture)
+    private func openEditor(_ capture: Capture, annotations: [Annotation] = []) {
+        let editor = EditorWindowController(capture: capture, annotations: annotations)
         editor.onClose = { [weak self, weak editor] in
+            if let editor { self?.remember(editor) }
             self?.editors.removeAll { $0 === editor }
             if self?.editors.isEmpty == true, self?.replacingEditor == false { NSApp.hide(nil) }
         }
         editors.append(editor)
         editor.show()
+    }
+
+    private func remember(_ editor: EditorWindowController) {
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return }
+        CGImageDestinationAddImage(dest, editor.capture.image, nil)
+        guard CGImageDestinationFinalize(dest) else { return }
+        last = (data as Data, editor.capture.scale, editor.annotations)
+    }
+
+    /// Menu item, or launching Snap again (Spotlight/Finder) while it's running.
+    @objc private func reopenLast() {
+        if let editor = editors.last { return editor.show() }
+        guard let last else { return }
+        guard let source = CGImageSourceCreateWithData(last.png as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return NSSound.beep() }
+        openEditor(Capture(image: image, scale: last.scale), annotations: last.annotations)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        reopenLast()
+        return false
     }
 
     @discardableResult

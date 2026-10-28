@@ -38,6 +38,9 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     private var redoStack: [[Annotation]] = []
     private var textField: NSTextField?
     private var textOrigin: CGPoint = .zero
+    /// Selected mark (click on it), and the drag that moves it.
+    private var selected: Int?
+    private var move: (start: CGPoint, original: Annotation, moved: Bool)?
 
     /// Image coordinates → view: view = image * zoom + offset. Recomputed on every draw so the whole
     /// export (which grows with padding, aspect ratio and outside marks) always fits in view.
@@ -45,9 +48,10 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     private var offset: CGPoint = .zero
     private var visibleArea: CGRect = .zero
 
-    init(capture: Capture, style: Beautify) {
+    init(capture: Capture, style: Beautify, annotations: [Annotation] = []) {
         self.capture = capture
         self.style = style
+        self.annotations = annotations
         super.init(frame: .zero)
     }
 
@@ -68,7 +72,18 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { false }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        // Open hand over a mark you can grab.
+        if hitIndex(imagePoint(event)) != nil { NSCursor.openHand.set() } else { (tool == .text ? NSCursor.iBeam : .crosshair).set() }
+    }
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: tool == .text ? .iBeam : .crosshair)
@@ -93,6 +108,13 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         ctx.fill(Renderer.layout(capture, marks, style).canvas)
         ctx.restoreGState()
         Renderer.drawFinal(capture, marks, style, in: ctx)
+
+        if let i = selected, i < annotations.count {
+            ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
+            ctx.setLineWidth(1.5 / zoom)
+            ctx.setLineDash(phase: 0, lengths: [4 / zoom, 3 / zoom])
+            ctx.stroke(annotations[i].bounds.insetBy(dx: -4 / zoom, dy: -4 / zoom))
+        }
     }
 
     // MARK: Settings
@@ -110,6 +132,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     func setColor(_ index: Int) {
         colorIndex = index
         Settings.colorIndex = index
+        editSelected { $0.color = Palette.colors[index] }
         textField?.textColor = color
         onToolChange?()
     }
@@ -117,8 +140,22 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     func setStroke(_ stroke: Stroke) {
         self.stroke = stroke
         Settings.stroke = stroke
+        editSelected { $0.stroke = stroke }
         textField?.font = .systemFont(ofSize: stroke.fontSize * zoom, weight: .bold)
         onToolChange?()
+    }
+
+    /// Recolor/resize the selected mark when you pick a color or thickness.
+    private func editSelected(_ change: (inout Annotation) -> Void) {
+        guard let i = selected, i < annotations.count else { return }
+        undoStack.append(annotations)
+        redoStack.removeAll()
+        change(&annotations[i])
+        needsDisplay = true
+    }
+
+    private func hitIndex(_ p: CGPoint) -> Int? {
+        annotations.indices.reversed().first { annotations[$0].hit(p, tolerance: 5 / zoom) }
     }
 
     // MARK: Undo
@@ -131,6 +168,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     }
 
     func undo() {
+        selected = nil
         guard let previous = undoStack.popLast() else { return NSSound.beep() }
         redoStack.append(annotations)
         annotations = previous
@@ -138,6 +176,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     }
 
     func redo() {
+        selected = nil
         guard let next = redoStack.popLast() else { return NSSound.beep() }
         undoStack.append(annotations)
         annotations = next
@@ -156,6 +195,18 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     override func mouseDown(with event: NSEvent) {
         commitText()
         let p = imagePoint(event)
+        // Clicking a mark selects it (drag to move, Delete to remove) instead of drawing over it.
+        if let i = hitIndex(p) {
+            selected = i
+            move = (p, annotations[i], false)
+            NSCursor.closedHand.set()
+            needsDisplay = true
+            return
+        }
+        if selected != nil {
+            selected = nil
+            needsDisplay = true
+        }
         if tool == .text {
             beginText(at: p)
         } else {
@@ -164,6 +215,17 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if let m = move, let i = selected {
+            if !m.moved {
+                undoStack.append(annotations)
+                redoStack.removeAll()
+                move?.moved = true
+            }
+            let p = imagePoint(event)
+            annotations[i] = m.original.moved(by: p.x - m.start.x, p.y - m.start.y)
+            needsDisplay = true
+            return
+        }
         guard var a = current else { return }
         a.end = constrained(from: a.start, to: imagePoint(event), shift: event.modifierFlags.contains(.shift), tool: a.tool)
         current = a
@@ -171,6 +233,11 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if move != nil {
+            move = nil
+            NSCursor.openHand.set()
+            return
+        }
         guard let a = current else { return }
         current = nil
         if a.isEmpty { needsDisplay = true } else { push(a) }
@@ -200,12 +267,20 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
               let key = event.charactersIgnoringModifiers?.lowercased() else { return super.keyDown(with: event) }
 
-        if event.keyCode == 53 { return onEscape?() ?? () } // Esc
-        if event.keyCode == 51 || event.keyCode == 117 { // Delete / Forward delete: remove last mark
+        if event.keyCode == 53 { // Esc: deselect first, close second
+            if selected != nil {
+                selected = nil
+                needsDisplay = true
+                return
+            }
+            return onEscape?() ?? ()
+        }
+        if event.keyCode == 51 || event.keyCode == 117 { // Delete: remove selected mark, else the last one
             guard !annotations.isEmpty else { return NSSound.beep() }
             undoStack.append(annotations)
             redoStack.removeAll()
-            annotations.removeLast()
+            annotations.remove(at: selected.map { min($0, annotations.count - 1) } ?? annotations.count - 1)
+            selected = nil
             needsDisplay = true
             return
         }
