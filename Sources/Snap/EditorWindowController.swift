@@ -10,6 +10,8 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
     private let canvas: CanvasView
     private let sidebar = NSVisualEffectView()
     private static let sidebarWidth: CGFloat = 224
+    private var sidebarMinHeight: CGFloat = 0
+    private var sidebarStack = NSStackView()
 
     private let tools = NSSegmentedControl()
     private let colors = NSSegmentedControl()
@@ -33,10 +35,10 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         let available = screen.visibleFrame.size
         let sidebarWidth = style.enabled ? Self.sidebarWidth : 0
         let maxCanvas = CGSize(width: available.width * 0.85 - sidebarWidth, height: available.height * 0.85 - 52)
-        let m = CanvasView.margin
+        let m = CanvasView.margin(for: capture.pointSize)
         let size = CGSize(width: capture.pointSize.width + 2 * m, height: capture.pointSize.height + 2 * m)
         let zoom = min(1, maxCanvas.width / size.width, maxCanvas.height / size.height)
-        let canvasSize = CGSize(width: max(640, (size.width * zoom).rounded()), height: max(240, (size.height * zoom).rounded()))
+        let canvasSize = CGSize(width: max(640, (size.width * zoom).rounded()), height: max(300, (size.height * zoom).rounded()))
 
         window = EditorWindow(contentRect: NSRect(origin: .zero, size: CGSize(width: canvasSize.width + sidebarWidth, height: canvasSize.height)),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -69,6 +71,13 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         window.contentView = root
         // Adding the toolbar can change the content size; pin it to exactly canvas + sidebar.
         window.setContentSize(root.frame.size)
+        // Measure the sidebar once it's in the window (controls only get their final size there), and
+        // make the window tall enough that nothing gets cut off on small captures.
+        root.layoutSubtreeIfNeeded()
+        sidebarMinHeight = ceil(sidebarStack.fittingSize.height)
+        if style.enabled, root.frame.height < sidebarMinHeight {
+            window.setContentSize(NSSize(width: root.frame.width, height: sidebarMinHeight))
+        }
         window.delegate = self
         window.controller = self
         canvas.onEscape = { [weak self] in self?.window.close() }
@@ -281,6 +290,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         corners.widthAnchor.constraint(equalTo: padding.widthAnchor).isActive = true
         aspect.widthAnchor.constraint(equalTo: padding.widthAnchor).isActive = true
 
+        sidebarStack = stack
         sidebar.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: sidebar.topAnchor),
@@ -334,6 +344,11 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         let canvasWidth = canvas.frame.width
         var frame = window.frame
         frame.size.width += visible ? Self.sidebarWidth : -Self.sidebarWidth
+        if visible, canvas.frame.height < sidebarMinHeight {
+            let grow = sidebarMinHeight - canvas.frame.height
+            frame.size.height += grow
+            frame.origin.y -= grow // keep the top edge in place
+        }
         sidebar.isHidden = !visible
         window.setFrame(frame, display: true, animate: true)
         canvas.frame.size.width = canvasWidth

@@ -19,8 +19,9 @@ final class EditorWindow: NSWindow {
 }
 
 final class CanvasView: NSView, NSTextFieldDelegate {
-    /// Drawable workspace around the screenshot, in image points.
-    static let margin: CGFloat = 100
+    /// Drawable workspace around the screenshot, in image points. Scales with the capture, so a
+    /// small screenshot isn't lost in a sea of gray.
+    static func margin(for size: CGSize) -> CGFloat { min(100, max(32, min(size.width, size.height) * 0.4)) }
 
     var onEscape: (() -> Void)?
     var onToolChange: (() -> Void)?
@@ -51,13 +52,14 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     }
 
     private func updateTransform() {
-        let m = Self.margin, size = capture.pointSize
+        let size = capture.pointSize, m = Self.margin(for: size)
         // Committed marks only, so the view doesn't rescale under the cursor mid-drag.
         let export = Renderer.layout(capture, annotations, style).canvas
         let area = CGRect(x: -m, y: -m, width: size.width + 2 * m, height: size.height + 2 * m)
             .union(export.insetBy(dx: -16, dy: -16))
         visibleArea = area
-        zoom = min(bounds.width / area.width, bounds.height / area.height)
+        // Up to 2× for small captures, so they're comfortable to draw on.
+        zoom = min(2, bounds.width / area.width, bounds.height / area.height)
         offset = CGPoint(x: (bounds.width - area.width * zoom) / 2 - area.minX * zoom,
                          y: (bounds.height - area.height * zoom) / 2 - area.minY * zoom)
     }
