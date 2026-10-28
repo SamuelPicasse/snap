@@ -7,9 +7,9 @@ import UniformTypeIdentifiers
 /// Renders the final image and encodes it as the smallest clean PNG:
 /// a libimagequant palette PNG when it is smaller, otherwise a regular truecolor PNG.
 enum Exporter {
-    static func png(capture: Capture, annotations: [Annotation], retina: Bool) -> Data? {
+    static func png(capture: Capture, annotations: [Annotation], style: Beautify, retina: Bool) -> Data? {
         let outScale = retina ? capture.scale : 1
-        let bounds = Renderer.exportBounds(capture, annotations)
+        let bounds = Renderer.layout(capture, annotations, style).canvas
         let width = Int((bounds.width * outScale).rounded())
         let height = Int((bounds.height * outScale).rounded())
 
@@ -21,7 +21,7 @@ enum Exporter {
         ctx.translateBy(x: 0, y: CGFloat(height))
         ctx.scaleBy(x: outScale, y: -outScale)
         ctx.translateBy(x: -bounds.minX, y: -bounds.minY)
-        Renderer.drawComposite(capture, annotations, in: ctx)
+        Renderer.drawFinal(capture, annotations, style, in: ctx)
 
         let rgba = Data(bytes: data, count: width * height * 4)
         let pixelsPerMeter = UInt32((72 * outScale / 0.0254).rounded())

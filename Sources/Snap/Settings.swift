@@ -56,6 +56,11 @@ enum Settings {
         set { defaults.set(newValue, forKey: "color") }
     }
 
+    static var beautify: Beautify {
+        get { defaults.data(forKey: "beautify").flatMap { try? JSONDecoder().decode(Beautify.self, from: $0) } ?? Beautify() }
+        set { defaults.set(try? JSONEncoder().encode(newValue), forKey: "beautify") }
+    }
+
     static var stroke: Stroke {
         get { Stroke(rawValue: defaults.object(forKey: "stroke") as? Int ?? 1) ?? .medium }
         set { defaults.set(newValue.rawValue, forKey: "stroke") }

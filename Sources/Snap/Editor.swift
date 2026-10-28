@@ -9,12 +9,20 @@ final class EditorWindowController: NSObject, NSWindowDelegate {
     private let tools = NSSegmentedControl()
     private let colors = NSSegmentedControl()
     private let strokes = NSSegmentedControl()
+    private let beautifyToggle = NSButton(checkboxWithTitle: "Beautify", target: nil, action: nil)
+    private let backgrounds = NSSegmentedControl()
+    private let padding = NSSlider(value: 0, minValue: 0, maxValue: 160, target: nil, action: nil)
+    private let corners = NSSlider(value: 0, minValue: 0, maxValue: 32, target: nil, action: nil)
+    private let shadowToggle = NSButton(checkboxWithTitle: "Shadow", target: nil, action: nil)
+    private let aspect = NSPopUpButton()
+    private let balanceToggle = NSButton(checkboxWithTitle: "Balance", target: nil, action: nil)
+    private var beautifyControls: [NSControl] { [backgrounds, padding, corners, shadowToggle, aspect, balanceToggle] }
 
     init(capture: Capture) {
         self.capture = capture
 
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main!
-        let toolbarHeight: CGFloat = 44
+        let toolbarHeight: CGFloat = 80
         let available = screen.visibleFrame.size
         let maxCanvas = CGSize(width: available.width * 0.85, height: available.height * 0.85 - toolbarHeight - 28)
         let m = CanvasView.margin
@@ -31,7 +39,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate {
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = NSColor(white: 0.13, alpha: 1)
 
-        canvas = CanvasView(capture: capture, zoom: zoom)
+        canvas = CanvasView(capture: capture, style: Settings.beautify)
         let area = content.height - toolbarHeight
         canvas.frame = NSRect(x: ((content.width - canvasSize.width) / 2).rounded(), y: ((area - canvasSize.height) / 2).rounded(),
                               width: canvasSize.width, height: canvasSize.height)
@@ -93,7 +101,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate {
     func close() { window.close() }
 
     private func export() -> Data? {
-        let data = Exporter.png(capture: capture, annotations: canvas.annotations, retina: Settings.retina)
+        let data = Exporter.png(capture: capture, annotations: canvas.annotations, style: canvas.style, retina: Settings.retina)
         if data == nil { NSSound.beep() }
         return data
     }
@@ -143,12 +151,77 @@ final class EditorWindowController: NSObject, NSWindowDelegate {
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let stack = NSStackView(views: [tools, colors, strokes, spacer, copy, save])
-        stack.orientation = .horizontal
-        stack.spacing = 12
+        let drawRow = NSStackView(views: [tools, colors, strokes, spacer, copy, save])
+        drawRow.spacing = 12
+
+        let stack = NSStackView(views: [drawRow, makeBeautifyRow()])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         stack.autoresizingMask = [.width]
+        drawRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -12).isActive = true
         return stack
+    }
+
+    private func makeBeautifyRow() -> NSView {
+        backgrounds.segmentCount = Background.allCases.count
+        backgrounds.trackingMode = .selectOne
+        for (i, bg) in Background.allCases.enumerated() {
+            backgrounds.setImage(bg.swatch(for: capture), forSegment: i)
+            backgrounds.setToolTip(bg.title, forSegment: i)
+            backgrounds.setWidth(26, forSegment: i)
+        }
+        padding.controlSize = .small
+        corners.controlSize = .small
+        padding.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        corners.widthAnchor.constraint(equalToConstant: 60).isActive = true
+        aspect.addItems(withTitles: Aspect.allCases.map(\.title))
+        aspect.controlSize = .small
+        balanceToggle.toolTip = "Even out uneven margins so the content is centered"
+
+        let style = canvas.style
+        beautifyToggle.state = style.enabled ? .on : .off
+        backgrounds.selectedSegment = Background.allCases.firstIndex(of: style.background) ?? 0
+        padding.doubleValue = style.padding
+        corners.doubleValue = style.cornerRadius
+        shadowToggle.state = style.shadow ? .on : .off
+        aspect.selectItem(at: Aspect.allCases.firstIndex(of: style.aspect) ?? 0)
+        balanceToggle.state = style.balance ? .on : .off
+
+        for control in [beautifyToggle] + beautifyControls {
+            control.target = self
+            control.action = #selector(styleChanged)
+            control.refusesFirstResponder = true
+        }
+        beautifyControls.forEach { $0.isEnabled = style.enabled }
+
+        func label(_ text: String) -> NSTextField {
+            let field = NSTextField(labelWithString: text)
+            field.font = .systemFont(ofSize: 11)
+            field.textColor = .secondaryLabelColor
+            return field
+        }
+        let row = NSStackView(views: [beautifyToggle, backgrounds, label("Padding"), padding, label("Corners"), corners,
+                                      shadowToggle, aspect, balanceToggle])
+        row.spacing = 10
+        row.setCustomSpacing(4, after: row.views[2])
+        row.setCustomSpacing(4, after: row.views[4])
+        return row
+    }
+
+    @objc private func styleChanged() {
+        let style = Beautify(enabled: beautifyToggle.state == .on,
+                             background: Background.allCases[max(0, backgrounds.selectedSegment)],
+                             padding: padding.doubleValue.rounded(),
+                             cornerRadius: corners.doubleValue.rounded(),
+                             shadow: shadowToggle.state == .on,
+                             aspect: Aspect.allCases[max(0, aspect.indexOfSelectedItem)],
+                             balance: balanceToggle.state == .on)
+        beautifyControls.forEach { $0.isEnabled = style.enabled }
+        Settings.beautify = style
+        canvas.style = style
+        window.makeFirstResponder(canvas)
     }
 
     private func syncToolbar() {
@@ -216,18 +289,37 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     private(set) var colorIndex = Settings.colorIndex
     private(set) var stroke = Settings.stroke
 
+    var style: Beautify { didSet { needsDisplay = true } }
+
     private let capture: Capture
-    private let zoom: CGFloat
     private var current: Annotation?
     private var undoStack: [[Annotation]] = []
     private var redoStack: [[Annotation]] = []
     private var textField: NSTextField?
     private var textOrigin: CGPoint = .zero
 
-    init(capture: Capture, zoom: CGFloat) {
+    /// Image coordinates → view: view = image * zoom + offset. Recomputed on every draw so the whole
+    /// export (which grows with padding, aspect ratio and outside marks) always fits in view.
+    private var zoom: CGFloat = 1
+    private var offset: CGPoint = .zero
+    private var visibleArea: CGRect = .zero
+
+    init(capture: Capture, style: Beautify) {
         self.capture = capture
-        self.zoom = zoom
+        self.style = style
         super.init(frame: .zero)
+    }
+
+    private func updateTransform() {
+        let m = Self.margin, size = capture.pointSize
+        // Committed marks only, so the view doesn't rescale under the cursor mid-drag.
+        let export = Renderer.layout(capture, annotations, style).canvas
+        let area = CGRect(x: -m, y: -m, width: size.width + 2 * m, height: size.height + 2 * m)
+            .union(export.insetBy(dx: -16, dy: -16))
+        visibleArea = area
+        zoom = min(bounds.width / area.width, bounds.height / area.height)
+        offset = CGPoint(x: (bounds.width - area.width * zoom) / 2 - area.minX * zoom,
+                         y: (bounds.height - area.height * zoom) / 2 - area.minY * zoom)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -242,22 +334,23 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        updateTransform()
         let marks = annotations + (current.map { [$0] } ?? [])
-        ctx.interpolationQuality = .high
-        ctx.scaleBy(x: zoom, y: zoom)
 
         // Workspace: slightly lighter than the window, so you can see where you can draw.
         ctx.setFillColor(NSColor(white: 0.19, alpha: 1).cgColor)
-        ctx.fill(CGRect(x: 0, y: 0, width: bounds.width / zoom, height: bounds.height / zoom))
+        ctx.fill(bounds)
 
-        ctx.translateBy(x: Self.margin, y: Self.margin)
+        ctx.interpolationQuality = .high
+        ctx.translateBy(x: offset.x, y: offset.y)
+        ctx.scaleBy(x: zoom, y: zoom)
         // Shadow under exactly what will be exported, so it's clear what's included.
         ctx.saveGState()
         ctx.setShadow(offset: .zero, blur: 10, color: NSColor.black.withAlphaComponent(0.6).cgColor)
         ctx.setFillColor(Renderer.background.cgColor)
-        ctx.fill(Renderer.exportBounds(capture, marks))
+        ctx.fill(Renderer.layout(capture, marks, style).canvas)
         ctx.restoreGState()
-        Renderer.drawComposite(capture, marks, in: ctx)
+        Renderer.drawFinal(capture, marks, style, in: ctx)
     }
 
     // MARK: Settings
@@ -314,8 +407,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     private func imagePoint(_ event: NSEvent) -> CGPoint {
         // Image coordinates; negative or beyond the image size when drawing in the workspace.
         let p = convert(event.locationInWindow, from: nil)
-        let m = Self.margin, size = capture.pointSize
-        return CGPoint(x: min(max(p.x / zoom - m, -m), size.width + m), y: min(max(p.y / zoom - m, -m), size.height + m))
+        let a = visibleArea
+        return CGPoint(x: min(max((p.x - offset.x) / zoom, a.minX), a.maxX), y: min(max((p.y - offset.y) / zoom, a.minY), a.maxY))
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -396,7 +489,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         field.cell?.isScrollable = true
         let height = ceil(stroke.fontSize * zoom * 1.4)
         // NSTextField insets its text ~2pt; shift left so the committed text lands where it was typed.
-        let x = (point.x + Self.margin) * zoom, y = (point.y + Self.margin) * zoom
+        let x = offset.x + point.x * zoom, y = offset.y + point.y * zoom
         field.frame = NSRect(x: x - 2, y: y, width: max(80, bounds.width - x), height: height)
         addSubview(field)
         window?.makeFirstResponder(field)

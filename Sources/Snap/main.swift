@@ -9,8 +9,8 @@ if args.count >= 4, args[1] == "--compress" {
         exit(1)
     }
     let scale = args.count >= 5 ? CGFloat(Double(args[4]) ?? 2) : 2
-    let retina = MainActor.assumeIsolated { Exporter.png(capture: Capture(image: image, scale: scale), annotations: [], retina: true) }
-    let small = MainActor.assumeIsolated { Exporter.png(capture: Capture(image: image, scale: scale), annotations: [], retina: false) }
+    let retina = MainActor.assumeIsolated { Exporter.png(capture: Capture(image: image, scale: scale), annotations: [], style: Settings.beautify, retina: true) }
+    let small = MainActor.assumeIsolated { Exporter.png(capture: Capture(image: image, scale: scale), annotations: [], style: Settings.beautify, retina: false) }
     guard let retina, let small else { print("Export failed"); exit(1) }
     try! retina.write(to: URL(fileURLWithPath: args[3]))
     try! small.write(to: URL(fileURLWithPath: args[3].replacingOccurrences(of: ".png", with: "@1x.png")))

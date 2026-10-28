@@ -9,9 +9,15 @@ struct ScreenShot {
 }
 
 /// The selected area, at the display's native pixel resolution.
-struct Capture {
+final class Capture {
     let image: CGImage
     let scale: CGFloat
+    lazy var analysis = CaptureAnalysis(image: image, scale: scale)
+
+    init(image: CGImage, scale: CGFloat) {
+        self.image = image
+        self.scale = scale
+    }
 
     var pointSize: CGSize { CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale) }
 }

@@ -45,24 +45,73 @@ enum Renderer {
 
     static func arrowHead(_ width: CGFloat) -> CGFloat { max(10, width * 4) }
 
-    /// The exported area: the screenshot, grown to include any marks that stick out of it.
-    static func exportBounds(_ capture: Capture, _ annotations: [Annotation]) -> CGRect {
+    struct Layout {
+        /// Screenshot (balanced if enabled) grown to include marks that stick out. The rounded card when beautifying.
+        var content: CGRect
+        /// The whole exported image: content plus beautify padding and aspect ratio.
+        var canvas: CGRect
+    }
+
+    static func layout(_ capture: Capture, _ annotations: [Annotation], _ style: Beautify) -> Layout {
         let image = CGRect(origin: .zero, size: capture.pointSize)
-        var bounds = image
-        for a in annotations where a.tool != .redact && !image.contains(a.bounds) {
+        guard style.enabled else {
+            let content = grown(image, by: annotations)
+            return Layout(content: content, canvas: content)
+        }
+        let content = grown(style.balance ? capture.analysis.balancedRect : image, by: annotations)
+        var canvas = content.insetBy(dx: -style.padding, dy: -style.padding)
+        if let ratio = style.aspect.ratio {
+            if canvas.width / canvas.height < ratio {
+                canvas = canvas.insetBy(dx: -(canvas.height * ratio - canvas.width) / 2, dy: 0)
+            } else {
+                canvas = canvas.insetBy(dx: 0, dy: -(canvas.width / ratio - canvas.height) / 2)
+            }
+        }
+        return Layout(content: content, canvas: canvas.integral)
+    }
+
+    /// `base`, grown to include any marks that stick out of it.
+    private static func grown(_ base: CGRect, by annotations: [Annotation]) -> CGRect {
+        var bounds = base
+        for a in annotations where a.tool != .redact && !base.contains(a.bounds) {
             bounds = bounds.union(a.bounds.insetBy(dx: -padding, dy: -padding))
         }
         return bounds.integral
     }
 
-    /// Background (only when marks stick out), screenshot and marks.
-    static func drawComposite(_ capture: Capture, _ annotations: [Annotation], in ctx: CGContext) {
-        let bounds = exportBounds(capture, annotations)
-        if bounds != CGRect(origin: .zero, size: capture.pointSize) {
-            ctx.setFillColor(background.cgColor)
-            ctx.fill(bounds)
+    /// Everything that gets exported, in image coordinates: background, card shadow, screenshot and marks.
+    static func drawFinal(_ capture: Capture, _ annotations: [Annotation], _ style: Beautify, in ctx: CGContext) {
+        let layout = layout(capture, annotations, style)
+        guard style.enabled else {
+            if layout.content != CGRect(origin: .zero, size: capture.pointSize) {
+                ctx.setFillColor(background.cgColor)
+                ctx.fill(layout.content)
+            }
+            draw(capture, annotations, in: ctx)
+            return
         }
+
+        style.background.draw(in: layout.canvas, capture: capture, ctx: ctx)
+
+        let radius = min(style.cornerRadius, layout.content.width / 2, layout.content.height / 2)
+        let card = CGPath(roundedRect: layout.content, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        if style.shadow {
+            // Shadow params are in device pixels; scale them so the look is the same at any zoom/output scale.
+            let s = abs(ctx.userSpaceToDeviceSpaceTransform.a)
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 0, height: -8 * s), blur: 28 * s, color: NSColor.black.withAlphaComponent(0.35).cgColor)
+            ctx.addPath(card)
+            ctx.setFillColor(background.cgColor)
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
+        ctx.saveGState()
+        ctx.addPath(card)
+        ctx.clip()
+        ctx.setFillColor(background.cgColor)
+        ctx.fill(layout.content)
         draw(capture, annotations, in: ctx)
+        ctx.restoreGState()
     }
 
     static func draw(_ capture: Capture, _ annotations: [Annotation], in ctx: CGContext) {
