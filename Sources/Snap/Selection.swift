@@ -23,7 +23,7 @@ final class SelectionController {
     private func finish(_ capture: Capture?) {
         guard !finished else { return }
         finished = true
-        windows.forEach { $0.orderOut(nil) }
+        windows.forEach { $0.close() } // close, not orderOut: frees the window and its frozen screen image
         windows.removeAll()
         completion(capture)
     }
@@ -36,6 +36,7 @@ final class OverlayWindow: NSWindow {
         overlay = OverlayView(shot: shot)
         super.init(contentRect: shot.screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         setFrame(shot.screen.frame, display: false)
+        isReleasedWhenClosed = false // ARC owns it
         level = .screenSaver
         isOpaque = true
         hasShadow = false
@@ -58,6 +59,12 @@ final class OverlayView: NSView {
         self.shot = shot
         frozen = NSImage(cgImage: shot.image, size: shot.screen.frame.size)
         super.init(frame: NSRect(origin: .zero, size: shot.screen.frame.size))
+        // Multiple displays: make the screen under the mouse key, so Esc and the crosshair work there.
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        window?.makeKey()
     }
 
     required init?(coder: NSCoder) { fatalError() }

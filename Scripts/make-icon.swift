@@ -1,6 +1,13 @@
 // Renders the app icon into Resources/AppIcon.icns.
-// Usage: swift Scripts/make-icon.swift   (writes Resources/AppIcon.icns, needs iconutil)
+// Usage: swift build -c release && swift Scripts/make-icon.swift
+// Artwork: Resources/AppIcon-source.png if present (1024×1024, square, full-bleed — no rounded corners
+// or shadow; this script adds the macOS shape, margin and shadow), else the built-in drawing below.
+// Every size is palette-compressed with Snap's own exporter to keep the app small.
 import AppKit
+
+let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+let resources = root.appendingPathComponent("Resources")
+let source = NSImage(contentsOf: resources.appendingPathComponent("AppIcon-source.png"))
 
 func render(_ px: Int) -> Data {
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px, bitsPerSample: 8, samplesPerPixel: 4,
@@ -21,10 +28,17 @@ func render(_ px: Int) -> Data {
     ctx.fillPath()
     ctx.restoreGState()
 
-    // Background: indigo → violet with a warm glow, like the app's "Grape"/"Sunset" backgrounds.
     ctx.saveGState()
     ctx.addPath(shape)
     ctx.clip()
+    if let source {
+        ctx.interpolationQuality = .high
+        source.draw(in: tile)
+        ctx.restoreGState()
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])!
+    }
+    // Background: indigo → violet with a warm glow, like the app's "Grape"/"Sunset" backgrounds.
     let space = CGColorSpace(name: CGColorSpace.sRGB)!
     func c(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor { CGColor(srgbRed: r, green: g, blue: b, alpha: a) }
     let base = CGGradient(colorsSpace: space, colors: [c(0.36, 0.30, 0.95), c(0.62, 0.25, 0.85)] as CFArray, locations: [0, 1])!
@@ -51,13 +65,13 @@ func render(_ px: Int) -> Data {
     }
     ctx.strokePath()
 
-    // Coral annotation arrow, bottom-left → top-right, with a soft shadow.
+    // White annotation arrow, bottom-left → top-right, with a soft shadow.
     ctx.saveGState()
     ctx.setShadow(offset: CGSize(width: 0, height: -6 * s), blur: 14 * s, color: NSColor.black.withAlphaComponent(0.3).cgColor)
     ctx.beginTransparencyLayer(auxiliaryInfo: nil) // one shadow for shaft + head together
-    let coral = c(1.0, 0.36, 0.33)
-    ctx.setStrokeColor(coral)
-    ctx.setFillColor(coral)
+    let arrow = c(1, 1, 1)
+    ctx.setStrokeColor(arrow)
+    ctx.setFillColor(arrow)
     ctx.setLineWidth(56)
     ctx.move(to: CGPoint(x: 372, y: 372))
     ctx.addLine(to: CGPoint(x: 590, y: 590))
@@ -75,20 +89,29 @@ func render(_ px: Int) -> Data {
     return rep.representation(using: .png, properties: [:])!
 }
 
-let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-let iconset = FileManager.default.temporaryDirectory.appendingPathComponent("AppIcon.iconset")
-try? FileManager.default.removeItem(at: iconset)
-try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
-for size in [16, 32, 128, 256, 512] {
-    try! render(size).write(to: iconset.appendingPathComponent("icon_\(size)x\(size).png"))
-    try! render(size * 2).write(to: iconset.appendingPathComponent("icon_\(size)x\(size)@2x.png"))
+func run(_ tool: String, _ args: [String]) {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: tool)
+    task.arguments = args
+    task.standardOutput = FileHandle.nullDevice
+    try! task.run()
+    task.waitUntilExit()
+    precondition(task.terminationStatus == 0, "\(tool) failed")
 }
-let resources = root.appendingPathComponent("Resources")
-try! FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
-try! render(1024).write(to: resources.appendingPathComponent("AppIcon-preview.png"))
-let task = Process()
-task.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-task.arguments = ["-c", "icns", iconset.path, "-o", resources.appendingPathComponent("AppIcon.icns").path]
-try! task.run()
-task.waitUntilExit()
-print(task.terminationStatus == 0 ? "Wrote Resources/AppIcon.icns" : "iconutil failed")
+
+// Write the .icns directly (iconutil re-encodes the PNGs and more than doubles the size).
+// Each entry: 4-byte type, 4-byte big-endian length (incl. header), PNG data.
+let snap = root.appendingPathComponent(".build/release/Snap").path
+precondition(FileManager.default.isExecutableFile(atPath: snap), "Build first: swift build -c release")
+let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("snap-icon.png").path
+func be(_ v: Int) -> Data { Data([UInt8(v >> 24 & 0xFF), UInt8(v >> 16 & 0xFF), UInt8(v >> 8 & 0xFF), UInt8(v & 0xFF)]) }
+var body = Data()
+for (type, px) in [("icp4", 16), ("icp5", 32), ("ic11", 32), ("ic12", 64), ("ic07", 128),
+                   ("ic13", 256), ("ic08", 256), ("ic14", 512), ("ic09", 512), ("ic10", 1024)] {
+    try! render(px).write(to: URL(fileURLWithPath: tmp))
+    run(snap, ["--compress", tmp, tmp, "1"])
+    let png = try! Data(contentsOf: URL(fileURLWithPath: tmp))
+    body += Data(type.utf8) + be(png.count + 8) + png
+}
+try! (Data("icns".utf8) + be(body.count + 8) + body).write(to: resources.appendingPathComponent("AppIcon.icns"))
+print("Wrote Resources/AppIcon.icns")

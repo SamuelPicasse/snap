@@ -28,11 +28,12 @@ enum ScreenGrabber {
     @MainActor
     static func grabAllScreens() async throws -> [ScreenShot] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        var shots: [ScreenShot] = []
-        for screen in NSScreen.screens {
+        // Start every display's capture at once, then collect: with several screens this keeps the
+        // hotkey-to-overlay delay at one capture instead of one per screen.
+        let pending = NSScreen.screens.compactMap { screen -> (NSScreen, CGFloat, Task<CGImage, Error>)? in
             let key = NSDeviceDescriptionKey("NSScreenNumber")
             guard let id = screen.deviceDescription[key] as? CGDirectDisplayID,
-                  let display = content.displays.first(where: { $0.displayID == id }) else { continue }
+                  let display = content.displays.first(where: { $0.displayID == id }) else { return nil }
 
             let scale = screen.backingScaleFactor
             let config = SCStreamConfiguration()
@@ -43,8 +44,11 @@ enum ScreenGrabber {
             config.colorSpaceName = CGColorSpace.sRGB
 
             let filter = SCContentFilter(display: display, excludingWindows: [])
-            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-            shots.append(ScreenShot(screen: screen, image: image, scale: scale))
+            return (screen, scale, Task { try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) })
+        }
+        var shots: [ScreenShot] = []
+        for (screen, scale, task) in pending {
+            shots.append(ScreenShot(screen: screen, image: try await task.value, scale: scale))
         }
         return shots
     }

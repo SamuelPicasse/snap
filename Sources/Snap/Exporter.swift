@@ -23,20 +23,23 @@ enum Exporter {
         ctx.translateBy(x: -bounds.minX, y: -bounds.minY)
         Renderer.drawFinal(capture, annotations, style, in: ctx)
 
-        let rgba = Data(bytes: data, count: width * height * 4)
-        let pixelsPerMeter = UInt32((72 * outScale / 0.0254).rounded())
+        let truecolor = { ctx.makeImage().flatMap { truecolorPNG($0, dpi: 72 * outScale) } }
+        if Settings.lossless { return truecolor() }
 
-        let truecolor = ctx.makeImage().flatMap { truecolorPNG($0, dpi: 72 * outScale) }
-        if Settings.lossless { return truecolor }
+        // libimagequant wants straight (non-premultiplied) alpha; only matters where there's transparency.
+        let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        for i in stride(from: 0, to: width * height * 4, by: 4) where pixels[i + 3] != 255 && pixels[i + 3] != 0 {
+            let a = Int(pixels[i + 3])
+            for c in 0..<3 { pixels[i + c] = UInt8(min(255, Int(pixels[i + c]) * 255 / a)) }
+        }
         // The screenshot card in output pixels; the palette should be spent there, not on the background gradient.
         let content = Renderer.layout(capture, annotations, style).content
         let important = CGRect(x: (content.minX - bounds.minX) * outScale, y: (content.minY - bounds.minY) * outScale,
                                width: content.width * outScale, height: content.height * outScale)
-        let indexed = indexedPNG(rgba: rgba, width: width, height: height, important: important, pixelsPerMeter: pixelsPerMeter)
-        switch (indexed, truecolor) {
-        case let (i?, t?): return i.count < t.count ? i : t
-        default: return indexed ?? truecolor
-        }
+        let pixelsPerMeter = UInt32((72 * outScale / 0.0254).rounded())
+        // Palette PNGs are smaller in practice; truecolor only when quantizing can't reach the quality floor.
+        return indexedPNG(rgba: UnsafeRawPointer(data), width: width, height: height, important: important, pixelsPerMeter: pixelsPerMeter)
+            ?? truecolor()
     }
 
     // MARK: Truecolor (ImageIO)
@@ -51,7 +54,7 @@ enum Exporter {
 
     // MARK: Palette (libimagequant + hand-written PNG)
 
-    private static func indexedPNG(rgba: Data, width: Int, height: Int, important: CGRect, pixelsPerMeter: UInt32) -> Data? {
+    private static func indexedPNG(rgba: UnsafeRawPointer, width: Int, height: Int, important: CGRect, pixelsPerMeter: UInt32) -> Data? {
         guard let attr = liq_attr_create() else { return nil }
         defer { liq_attr_destroy(attr) }
         // Min 70 / max 95: if it can't look near-identical with 256 colors, give up and use truecolor.
@@ -69,8 +72,8 @@ enum Exporter {
             }
         }
 
-        return rgba.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Data? in
-            guard let image = liq_image_create_rgba(attr, buffer.baseAddress!, Int32(width), Int32(height), 0) else { return nil }
+        do {
+            guard let image = liq_image_create_rgba(attr, rgba, Int32(width), Int32(height), 0) else { return nil }
             defer { liq_image_destroy(image) }
             liq_image_set_importance_map(image, &importance, importance.count, LIQ_COPY_PIXELS)
 

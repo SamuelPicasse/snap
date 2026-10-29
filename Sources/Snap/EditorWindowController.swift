@@ -110,7 +110,13 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         guard let png = export() else { return }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        let url = Settings.saveFolder.appendingPathComponent("Screenshot \(formatter.string(from: Date())).png")
+        let base = "Screenshot \(formatter.string(from: Date()))"
+        var url = Settings.saveFolder.appendingPathComponent("\(base).png")
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = Settings.saveFolder.appendingPathComponent("\(base) \(n).png")
+            n += 1
+        }
         do {
             try png.write(to: url)
             window.close()

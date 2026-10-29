@@ -1,6 +1,8 @@
 #!/bin/zsh
-# Builds Snap.app into ./build. Usage: Scripts/bundle.sh [--install]
+# Builds Snap.app into ./build. Usage: Scripts/bundle.sh [--install | --release]
 #   --install  also copies the app to ~/Applications and (re)launches it.
+#   --release  signs with Developer ID + hardened runtime, notarizes and writes build/Snap.zip
+#              to share. One-time setup: xcrun notarytool store-credentials snap-notary
 # SIGN_IDENTITY overrides the codesigning identity. A stable identity keeps the
 # Screen Recording permission across rebuilds; ad-hoc ("-") re-prompts each build.
 set -euo pipefail
@@ -33,6 +35,17 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </dict>
 </plist>
 EOF
+
+if [[ "${1:-}" == "--release" ]]; then
+    IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application/ {print $2; exit}')}"
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+    ditto -c -k --keepParent "$APP" build/Snap.zip
+    xcrun notarytool submit build/Snap.zip --keychain-profile snap-notary --wait
+    xcrun stapler staple "$APP"
+    ditto -c -k --keepParent "$APP" build/Snap.zip  # re-zip with the stapled ticket
+    echo "Release: build/Snap.zip, signed with: $IDENTITY"
+    exit 0
+fi
 
 IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $2; exit}')}"
 codesign --force --sign "${IDENTITY:--}" "$APP"

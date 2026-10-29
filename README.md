@@ -30,8 +30,22 @@ One-time setup:
 
 ## Notes
 
-- Output is a palette PNG via libimagequant (vendored static lib in `Vendor/`, GPL-3) when smaller, else a regular PNG. Retina images carry 144 dpi so they display at the right size.
-- `Snap --compress in.png out.png [scale]` runs the exporter on an existing file (writes `out.png` and `out@1x.png`).
+- Output is a palette PNG via libimagequant (vendored static lib in `Vendor/`, GPL-3), or a regular PNG when it can't reach the quality floor (or "Lossless" is on). Retina images carry 144 dpi so they display at the right size.
+- `Snap --compress in.png out.png [scale]` runs the exporter on an existing file (plain, no beautify).
 - `open ~/Applications/Snap.app --args --open image.png [scale]` opens an existing image in the editor.
-- App icon: `swift Scripts/make-icon.swift` regenerates `Resources/AppIcon.icns`.
+- App icon: `swift Scripts/make-icon.swift` regenerates `Resources/AppIcon.icns` (run `swift build -c release` first; drop a square 1024×1024 `Resources/AppIcon-source.png` to use your own artwork).
 - To update the vendored lib: `brew upgrade libimagequant` and copy `libimagequant.a` + `libimagequant.h` into `Vendor/libimagequant/`.
+
+## Sharing a build
+
+```bash
+Scripts/bundle.sh --release
+```
+
+Signs with the Developer ID certificate (hardened runtime), notarizes with Apple and writes `build/Snap.zip`. The recipient unzips, moves `Snap.app` to Applications and follows the one-time setup above. Needs Apple Silicon and macOS 14+.
+
+Once per Mac, store notarization credentials (app-specific password from appleid.apple.com):
+
+```bash
+xcrun notarytool store-credentials snap-notary --apple-id <apple-id> --team-id M7CUSD4FD9
+```
