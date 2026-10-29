@@ -100,7 +100,7 @@ enum Settings {
     }
 
     static var redactStyle: RedactStyle {
-        get { RedactStyle(rawValue: defaults.integer(forKey: "redactStyle")) ?? .blur }
+        get { (defaults.object(forKey: "redactStyle") as? Int).flatMap(RedactStyle.init) ?? .white }
         set { defaults.set(newValue.rawValue, forKey: "redactStyle") }
     }
 
