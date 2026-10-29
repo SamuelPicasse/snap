@@ -24,6 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainActor.assumeIsolated { self?.capture() }
         }
 
+        // Check for updates now and daily, but never interrupt an open editor.
+        Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { _ in
+            MainActor.assumeIsolated { self.checkForUpdates(userInitiated: false) }
+        }.fire()
+
         // `open Snap.app --args --open image.png [scale]`: annotate an existing image.
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--open"), i + 1 < args.count,
@@ -66,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Check for Updates… (\(Updater.current))", action: #selector(checkForUpdatesFromMenu), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit Snap", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         for item in menu.items where item.action != #selector(NSApplication.terminate(_:)) { item.target = self }
@@ -101,6 +107,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             showAlert("Couldn't change Launch at Login", error.localizedDescription)
         }
+    }
+
+    @objc private func checkForUpdatesFromMenu() { checkForUpdates(userInitiated: true) }
+
+    private func checkForUpdates(userInitiated: Bool) {
+        guard userInitiated || (editors.isEmpty && selection == nil) else { return }
+        Task { await Updater.check(userInitiated: userInitiated) }
     }
 
     @objc private func openKeyboardSettings() {

@@ -36,13 +36,18 @@ One-time setup:
 - App icon: `swift Scripts/make-icon.swift` regenerates `Resources/AppIcon.icns` (run `swift build -c release` first; drop a square 1024×1024 `Resources/AppIcon-source.png` to use your own artwork).
 - To update the vendored lib: `brew upgrade libimagequant` and copy `libimagequant.a` + `libimagequant.h` into `Vendor/libimagequant/`.
 
-## Sharing a build
+## Install (others)
 
 ```bash
-Scripts/bundle.sh --release
+brew install --cask samuelpicasse/tap/snap
 ```
 
-Signs with the Developer ID Application certificate of team `UJN9G4KLA2` (override with `TEAM=…`), hardened runtime, notarizes with Apple and writes `build/Snap.zip`. The recipient unzips, moves `Snap.app` to Applications and follows the one-time setup above. Needs Apple Silicon and macOS 14+.
+Or download `Snap.zip` from the latest [release](https://github.com/SamuelPicasse/snap/releases). Needs Apple Silicon and macOS 14+. Then follow the one-time setup above. Snap checks for updates daily (and via the menu) and updates itself.
+
+## Releasing
+
+1. Bump `VERSION` in `Scripts/bundle.sh`, commit and push.
+2. `Scripts/bundle.sh --release` — signs with the Developer ID Application certificate of team `UJN9G4KLA2` (override with `TEAM=…`), hardened runtime, notarizes, publishes GitHub release `v$VERSION` with `Snap.zip`, and updates the cask in `SamuelPicasse/homebrew-tap`.
 
 Once per Mac, store notarization credentials (app-specific password from appleid.apple.com):
 

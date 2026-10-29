@@ -1,13 +1,15 @@
 #!/bin/zsh
 # Builds Snap.app into ./build. Usage: Scripts/bundle.sh [--install | --release]
 #   --install  also copies the app to ~/Applications and (re)launches it.
-#   --release  signs with Developer ID + hardened runtime, notarizes and writes build/Snap.zip
-#              to share. Uses the Developer ID certificate of TEAM (default: Sammy's own team).
+#   --release  signs with Developer ID + hardened runtime, notarizes, publishes GitHub release
+#              v$VERSION with Snap.zip and updates the Homebrew cask. Bump VERSION first.
+#              Uses the Developer ID certificate of TEAM (default: Sammy's own team).
 #              One-time setup: xcrun notarytool store-credentials snap-notary
 # SIGN_IDENTITY overrides the codesigning identity. A stable identity keeps the
 # Screen Recording permission across rebuilds; ad-hoc ("-") re-prompts each build.
 set -euo pipefail
 TEAM="${TEAM:-UJN9G4KLA2}"
+VERSION=0.1.0
 cd "${0:A:h}/.."
 
 swift build -c release
@@ -19,7 +21,7 @@ cp .build/release/Snap "$APP/Contents/MacOS/Snap"
 strip -x "$APP/Contents/MacOS/Snap"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"  # regenerate with: swift Scripts/make-icon.swift
 
-cat > "$APP/Contents/Info.plist" <<'EOF'
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -29,8 +31,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleExecutable</key><string>Snap</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
@@ -46,7 +48,17 @@ if [[ "${1:-}" == "--release" ]]; then
     xcrun notarytool submit build/Snap.zip --keychain-profile snap-notary --wait
     xcrun stapler staple "$APP"
     ditto -c -k --keepParent "$APP" build/Snap.zip  # re-zip with the stapled ticket
-    echo "Release: build/Snap.zip, signed with: $IDENTITY"
+
+    # Publish: the in-app updater and the Homebrew cask both download from this release.
+    gh release create "v$VERSION" build/Snap.zip --repo SamuelPicasse/snap --title "Snap $VERSION" --generate-notes
+    TAP=$(mktemp -d)
+    gh repo clone SamuelPicasse/homebrew-tap "$TAP" -- -q
+    mkdir -p "$TAP/Casks"
+    sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$(shasum -a 256 build/Snap.zip | cut -d' ' -f1)/" Scripts/snap.rb > "$TAP/Casks/snap.rb"
+    git -C "$TAP" add Casks/snap.rb
+    git -C "$TAP" commit -qm "snap $VERSION"
+    git -C "$TAP" push -q
+    echo "Released Snap $VERSION (signed with: $IDENTITY)"
     exit 0
 fi
 
