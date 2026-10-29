@@ -9,7 +9,7 @@
 # Screen Recording permission across rebuilds; ad-hoc ("-") re-prompts each build.
 set -euo pipefail
 TEAM="${TEAM:-UJN9G4KLA2}"
-VERSION=0.5.0
+VERSION=0.5.1
 cd "${0:A:h}/.."
 
 swift build -c release
