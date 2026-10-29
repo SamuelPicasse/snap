@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 
 enum Tool: Int, CaseIterable {
     case line, arrow, box, text, redact
@@ -8,6 +9,17 @@ enum Tool: Int, CaseIterable {
         ["line.diagonal", "arrow.up.right", "rectangle", "textformat", "checkerboard.rectangle"][rawValue]
     }
     var label: String { ["Line (L)", "Arrow (A)", "Box (R)", "Text (T)", "Redact (B)"][rawValue] }
+}
+
+enum CaptureMode: Int, CaseIterable {
+    case area, screen
+
+    var title: String { ["Capture Area", "Capture Screen"][rawValue] }
+    /// macOS's own screenshot shortcuts — free them in System Settings to use them for Snap.
+    var defaultShortcut: Settings.Shortcut {
+        [Settings.Shortcut(keyCode: UInt32(kVK_ANSI_3), modifiers: UInt32(cmdKey | shiftKey), label: "⌘⇧3"),
+         Settings.Shortcut(keyCode: UInt32(kVK_ANSI_4), modifiers: UInt32(cmdKey | shiftKey), label: "⌘⇧4")][rawValue]
+    }
 }
 
 enum Stroke: Int, CaseIterable {
@@ -36,6 +48,21 @@ enum Settings {
     static var retina: Bool {
         get { defaults.object(forKey: "retina") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "retina") }
+    }
+
+    /// Global shortcut: Carbon key code + modifiers, and how to display it.
+    struct Shortcut: Codable, Equatable {
+        var keyCode: UInt32
+        var modifiers: UInt32
+        var label: String
+    }
+
+    static func shortcut(_ mode: CaptureMode) -> Shortcut {
+        defaults.data(forKey: "shortcut.\(mode)").flatMap { try? JSONDecoder().decode(Shortcut.self, from: $0) } ?? mode.defaultShortcut
+    }
+
+    static func setShortcut(_ shortcut: Shortcut, for mode: CaptureMode) {
+        defaults.set(try? JSONEncoder().encode(shortcut), forKey: "shortcut.\(mode)")
     }
 
     /// Skip palette compression: every pixel exact, files ~2–3× larger.

@@ -1,16 +1,17 @@
 import AppKit
 
-/// Shows a dimmed, frozen copy of every screen and lets the user drag out an area on one of them.
+/// Shows a dimmed, frozen copy of every screen. Area mode: drag out an area on one of them.
+/// Screen mode: the screen under the mouse lights up, a click captures all of it.
 @MainActor
 final class SelectionController {
     private var windows: [OverlayWindow] = []
     private let completion: (Capture?) -> Void
     private var finished = false
 
-    init(shots: [ScreenShot], completion: @escaping (Capture?) -> Void) {
+    init(shots: [ScreenShot], mode: CaptureMode, completion: @escaping (Capture?) -> Void) {
         self.completion = completion
         for shot in shots {
-            let window = OverlayWindow(shot: shot)
+            let window = OverlayWindow(shot: shot, mode: mode)
             window.overlay.onFinish = { [weak self] capture in self?.finish(capture) }
             windows.append(window)
             window.orderFrontRegardless()
@@ -32,8 +33,8 @@ final class SelectionController {
 final class OverlayWindow: NSWindow {
     let overlay: OverlayView
 
-    init(shot: ScreenShot) {
-        overlay = OverlayView(shot: shot)
+    init(shot: ScreenShot, mode: CaptureMode) {
+        overlay = OverlayView(shot: shot, mode: mode)
         super.init(contentRect: shot.screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         setFrame(shot.screen.frame, display: false)
         isReleasedWhenClosed = false // ARC owns it
@@ -51,12 +52,16 @@ final class OverlayWindow: NSWindow {
 final class OverlayView: NSView {
     var onFinish: ((Capture?) -> Void)?
     private let shot: ScreenShot
+    private let mode: CaptureMode
     private let frozen: NSImage
     private var start: NSPoint?
     private var selection: NSRect?
+    private var hovered: Bool
 
-    init(shot: ScreenShot) {
+    init(shot: ScreenShot, mode: CaptureMode) {
         self.shot = shot
+        self.mode = mode
+        hovered = shot.screen.frame.contains(NSEvent.mouseLocation)
         frozen = NSImage(cgImage: shot.image, size: shot.screen.frame.size)
         super.init(frame: NSRect(origin: .zero, size: shot.screen.frame.size))
         // Multiple displays: make the screen under the mouse key, so Esc and the crosshair work there.
@@ -65,6 +70,13 @@ final class OverlayView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         window?.makeKey()
+        hovered = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        needsDisplay = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -79,6 +91,15 @@ final class OverlayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         frozen.draw(in: bounds)
         NSColor.black.withAlphaComponent(0.35).setFill()
+        if mode == .screen {
+            guard hovered else { return bounds.fill(using: .sourceOver) }
+            NSColor.white.setStroke()
+            let border = NSBezierPath(rect: bounds.insetBy(dx: 1.5, dy: 1.5))
+            border.lineWidth = 3
+            border.stroke()
+            drawPill("Click to capture this screen  ·  Esc to cancel", at: NSPoint(x: bounds.midX, y: bounds.midY))
+            return
+        }
         guard let selection else {
             bounds.fill(using: .sourceOver)
             return
@@ -98,15 +119,21 @@ final class OverlayView: NSView {
     }
 
     private func drawSizeLabel(for rect: NSRect) {
-        let text = "\(Int(rect.width * shot.scale)) × \(Int(rect.height * shot.scale))" as NSString
+        let text = "\(Int(rect.width * shot.scale)) × \(Int(rect.height * shot.scale))"
+        // Bottom-right under the selection, or inside it when there's no room below.
+        let y = rect.minY < 30 ? rect.minY + 16 : rect.minY - 14
+        drawPill(text, at: NSPoint(x: rect.maxX, y: y), alignRight: true)
+    }
+
+    private func drawPill(_ string: String, at point: NSPoint, alignRight: Bool = false) {
+        let text = string as NSString
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
             .foregroundColor: NSColor.white,
         ]
         let size = text.size(withAttributes: attrs)
-        var box = NSRect(x: rect.maxX - size.width - 10, y: rect.minY - size.height - 10,
-                         width: size.width + 10, height: size.height + 4)
-        if box.minY < 4 { box.origin.y = rect.minY + 6 }
+        var box = NSRect(x: alignRight ? point.x - size.width - 10 : point.x - size.width / 2 - 5,
+                         y: point.y - size.height / 2 - 2, width: size.width + 10, height: size.height + 4)
         box.origin.x = max(4, box.origin.x)
         NSColor.black.withAlphaComponent(0.75).setFill()
         NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4).fill()
@@ -114,6 +141,7 @@ final class OverlayView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if mode == .screen { return onFinish?(Capture(image: shot.image, scale: shot.scale)) ?? () }
         start = convert(event.locationInWindow, from: nil)
         selection = nil
     }
@@ -129,6 +157,7 @@ final class OverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard mode == .area else { return }
         defer { start = nil }
         guard let selection, selection.width * shot.scale >= 4, selection.height * shot.scale >= 4 else {
             onFinish?(nil)

@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import ServiceManagement
 
 /// Small native settings window (⌘, from the menu bar menu).
@@ -9,15 +10,22 @@ final class SettingsWindowController: NSObject {
     private let lossless = NSButton(checkboxWithTitle: "Lossless (sharper, larger files)", target: nil, action: nil)
     private let folder = NSTextField(labelWithString: "")
     private let login = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
-    private let hotKeyRegistered: () -> Bool
+    private var recording: Any?
+    private let hotKeyRegistered: (CaptureMode) -> Bool
+    private let setHotKeysEnabled: (Bool) -> Void
     private let checkForUpdates: () -> Void
 
-    init(hotKeyRegistered: @escaping () -> Bool, checkForUpdates: @escaping () -> Void) {
+    init(hotKeyRegistered: @escaping (CaptureMode) -> Bool, setHotKeysEnabled: @escaping (Bool) -> Void, checkForUpdates: @escaping () -> Void) {
         self.hotKeyRegistered = hotKeyRegistered
+        self.setHotKeysEnabled = setHotKeysEnabled
         self.checkForUpdates = checkForUpdates
         super.init()
         window.title = "Snap Settings"
         window.isReleasedWhenClosed = false
+        // Closing the window mid-recording must not leave the global shortcuts switched off.
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stopRecording() }
+        }
     }
 
     func show() {
@@ -42,18 +50,27 @@ final class SettingsWindowController: NSObject {
         login.target = self
         login.action = #selector(loginChanged)
 
-        let shortcut = NSTextField(labelWithString: hotKeyRegistered() ? "⌘⇧3" : "⌘⇧3 is taken by macOS")
-        let free = NSButton(title: "Keyboard Settings…", target: self, action: #selector(openKeyboardSettings))
-        free.isHidden = hotKeyRegistered()
-
         func label(_ text: String) -> NSTextField { NSTextField(labelWithString: text) }
         func row(_ views: NSView...) -> NSStackView { NSStackView(views: views) }
+        /// Click-to-record button, plus a warning when the shortcut can't be registered.
+        func shortcutRow(_ mode: CaptureMode) -> NSStackView {
+            let recorder = NSButton(title: Settings.shortcut(mode).label, target: self, action: #selector(recordShortcut(_:)))
+            recorder.tag = mode.rawValue
+            recorder.toolTip = "Click, then press a new shortcut (Esc cancels)"
+            let taken = label("Taken by macOS or another app")
+            taken.textColor = .systemOrange
+            let free = NSButton(title: "Keyboard Settings…", target: self, action: #selector(openKeyboardSettings))
+            taken.isHidden = hotKeyRegistered(mode)
+            free.isHidden = hotKeyRegistered(mode) || Settings.shortcut(mode) != mode.defaultShortcut // macOS's own
+            return row(recorder, taken, free)
+        }
         let grid = NSGridView(views: [
             [label("Resolution:"), resolution],
             [NSGridCell.emptyContentView, lossless],
             [label("Save to:"), row(folder, NSButton(title: "Choose…", target: self, action: #selector(chooseFolder)))],
             [NSGridCell.emptyContentView, login],
-            [label("Shortcut:"), row(shortcut, free)],
+            [label("Capture area:"), shortcutRow(.area)],
+            [label("Capture screen:"), shortcutRow(.screen)],
             [label("Version:"), row(label(Updater.current), NSButton(title: "Check for Updates", target: self, action: #selector(updates)))],
         ])
         grid.column(at: 0).xPlacement = .trailing
@@ -72,6 +89,37 @@ final class SettingsWindowController: NSObject {
             grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
         ])
         window.contentView = content
+    }
+
+    /// Next key press with ⌘, ⌃ or ⌥ becomes the capture shortcut; Esc cancels.
+    @objc private func recordShortcut(_ recorder: NSButton) {
+        guard recording == nil, let mode = CaptureMode(rawValue: recorder.tag) else { return }
+        recorder.title = "Type shortcut…"
+        setHotKeysEnabled(false) // otherwise pressing an existing shortcut would start a capture
+        recording = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            if event.keyCode == 53 || !flags.intersection([.command, .control, .option]).isEmpty {
+                if event.keyCode != 53 {
+                    let carbon = [(NSEvent.ModifierFlags.control, controlKey, "⌃"), (.option, optionKey, "⌥"),
+                                  (.shift, shiftKey, "⇧"), (.command, cmdKey, "⌘")].filter { flags.contains($0.0) }
+                    let key = event.charactersIgnoringModifiers?.uppercased() ?? "?"
+                    Settings.setShortcut(Settings.Shortcut(keyCode: UInt32(event.keyCode),
+                                                           modifiers: UInt32(carbon.reduce(0) { $0 | $1.1 }),
+                                                           label: carbon.map(\.2).joined() + key), for: mode)
+                }
+                self.stopRecording()
+                self.build()
+            }
+            return nil // swallow key presses while recording
+        }
+    }
+
+    private func stopRecording() {
+        guard let recording else { return }
+        NSEvent.removeMonitor(recording)
+        self.recording = nil
+        setHotKeysEnabled(true)
     }
 
     @objc private func resolutionChanged() { Settings.retina = resolution.indexOfSelectedItem == 0 }

@@ -4,11 +4,12 @@ import Carbon
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
-    private var hotKey: HotKey?
+    private var hotKeys: [CaptureMode: HotKey] = [:]
     private var selection: SelectionController?
     private var editors: [EditorWindowController] = []
     private var replacingEditor = false
-    private lazy var settings = SettingsWindowController(hotKeyRegistered: { [weak self] in self?.hotKey?.registered == true },
+    private lazy var settings = SettingsWindowController(hotKeyRegistered: { [weak self] in self?.hotKeys[$0]?.registered == true },
+                                                         setHotKeysEnabled: { [weak self] in if $0 { self?.registerHotKeys() } else { self?.hotKeys = [:] } },
                                                          checkForUpdates: { [weak self] in self?.checkForUpdates(userInitiated: true) })
     /// The last screenshot and its marks, kept after the editor closes so an accidental Esc or
     /// close can be undone. Stored as PNG: a cropped CGImage would keep the whole frozen screen alive.
@@ -21,9 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
 
-        hotKey = HotKey(keyCode: UInt32(kVK_ANSI_3), modifiers: UInt32(cmdKey | shiftKey), id: 1) { [weak self] in
-            MainActor.assumeIsolated { self?.capture() }
-        }
+        registerHotKeys()
 
         // Check for updates now and daily, but never interrupt an open editor.
         Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { _ in
@@ -40,19 +39,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func registerHotKeys() {
+        hotKeys = [:] // unregister the old ones first
+        for mode in CaptureMode.allCases {
+            let shortcut = Settings.shortcut(mode)
+            hotKeys[mode] = HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers, id: UInt32(mode.rawValue + 1)) { [weak self] in
+                MainActor.assumeIsolated { self?.capture(mode) }
+            }
+        }
+    }
+
     // MARK: Menu
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        let capture = NSMenuItem(title: "Capture Area", action: #selector(captureFromMenu), keyEquivalent: "3")
-        capture.keyEquivalentModifierMask = [.command, .shift]
-        menu.addItem(capture)
+        for mode in CaptureMode.allCases {
+            let item = NSMenuItem(title: "\(mode.title)   \(Settings.shortcut(mode).label)", action: #selector(captureFromMenu(_:)), keyEquivalent: "")
+            item.tag = mode.rawValue
+            menu.addItem(item)
+        }
         let reopen = NSMenuItem(title: "Reopen Last Screenshot", action: last == nil ? nil : #selector(reopenLast), keyEquivalent: "")
         menu.addItem(reopen)
-        if hotKey?.registered != true {
-            let warning = NSMenuItem(title: "⚠︎ ⌘⇧3 is taken by macOS…", action: #selector(openSettings), keyEquivalent: "")
-            menu.addItem(warning)
+        if hotKeys.values.contains(where: { !$0.registered }) {
+            menu.addItem(NSMenuItem(title: "⚠︎ A shortcut is taken — fix it in Settings…", action: #selector(openSettings), keyEquivalent: ""))
         }
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
@@ -61,9 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for item in menu.items where item.action != #selector(NSApplication.terminate(_:)) { item.target = self }
     }
 
-    @objc private func captureFromMenu() {
+    @objc private func captureFromMenu(_ sender: NSMenuItem) {
         // Let the menu close before freezing the screen.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.capture() }
+        let mode = CaptureMode(rawValue: sender.tag) ?? .area
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.capture(mode) }
     }
 
     @objc private func openSettings() {
@@ -77,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Capture flow
 
-    func capture() {
+    func capture(_ mode: CaptureMode) {
         guard selection == nil else { return }
         // One editor at a time: a new ⌘⇧3 discards the open one. Close it first so it isn't
         // in the frozen screenshot, and give the window server a moment to remove it.
@@ -85,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             replacingEditor = true
             editors.forEach { $0.close() }
             replacingEditor = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.capture() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.capture(mode) }
             return
         }
         guard CGPreflightScreenCaptureAccess() else {
@@ -102,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             do {
                 let shots = try await ScreenGrabber.grabAllScreens()
-                selection = SelectionController(shots: shots) { result in
+                selection = SelectionController(shots: shots, mode: mode) { result in
                     self.selection = nil
                     if let result { self.openEditor(result) } else { NSApp.hide(nil) }
                 }

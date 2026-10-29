@@ -1,6 +1,6 @@
 # Snap
 
-Tiny macOS screenshot tool: ⌘⇧3 → drag an area → annotate → ⌘C copy / ⌘S save. See [PRD.md](PRD.md).
+Tiny macOS screenshot tool: ⌘⇧3 → drag an area (or ⌘⇧4 → click a screen) → annotate → ⌘C copy / ⌘S save. Both shortcuts can be changed in Settings. See [PRD.md](PRD.md).
 
 ## Build & install
 
@@ -11,7 +11,7 @@ Scripts/bundle.sh --install
 Builds `build/Snap.app`, signs it with your Apple Development identity (keeps the Screen Recording permission across rebuilds), copies it to `~/Applications` and launches it.
 
 One-time setup:
-1. System Settings → Keyboard → Keyboard Shortcuts → Screenshots → untick **Save picture of screen as a file** (⌘⇧3).
+1. System Settings → Keyboard → Keyboard Shortcuts → Screenshots → untick **Save picture of screen as a file** (⌘⇧3) and **Save picture of selected area as a file** (⌘⇧4) — or pick other shortcuts in Snap → Settings.
 2. Press ⌘⇧3 once and allow Snap under Privacy & Security → Screen & System Audio Recording.
 
 ## Editor keys
