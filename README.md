@@ -33,6 +33,7 @@ One-time setup:
 - Output is a palette PNG via libimagequant (vendored static lib in `Vendor/`, GPL-3), or a regular PNG when it can't reach the quality floor (or "Lossless" is on). Retina images carry 144 dpi so they display at the right size.
 - `Snap --compress in.png out.png [scale]` runs the exporter on an existing file (plain, no beautify).
 - `open ~/Applications/Snap.app --args --open image.png [scale]` opens an existing image in the editor.
+- Upscale 2× (editor button, only for captures from 1× screens): on-device Core ML model `Resources/Upscaler.mlpackage` — Real-ESRGAN *realesr-animevideov3* by xinntao (BSD-3, https://github.com/xinntao/Real-ESRGAN), converted with `Scripts/make-upscaler.py`. Loaded only while upscaling; runs in tiles (~1 s and a few hundred MB peak for a full 1× screen).
 - App icon: `swift Scripts/make-icon.swift` regenerates `Resources/AppIcon.icns` (run `swift build -c release` first; drop a square 1024×1024 `Resources/AppIcon-source.png` to use your own artwork).
 - To update the vendored lib: `brew upgrade libimagequant` and copy `libimagequant.a` + `libimagequant.h` into `Vendor/libimagequant/`.
 

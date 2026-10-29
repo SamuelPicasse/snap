@@ -32,7 +32,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     var style: Beautify { didSet { needsDisplay = true } }
 
-    private let capture: Capture
+    var capture: Capture { didSet { needsDisplay = true } } // replaced by Upscale 2× (same point size)
     private var current: Annotation?
     private var undoStack: [[Annotation]] = []
     private var redoStack: [[Annotation]] = []

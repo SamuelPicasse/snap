@@ -5,7 +5,7 @@ import AppKit
 @MainActor
 final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
     var onClose: (() -> Void)?
-    let capture: Capture
+    private(set) var capture: Capture
     var annotations: [Annotation] { canvas.annotations }
     private let window: EditorWindow
     private let canvas: CanvasView
@@ -146,12 +146,15 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         static let colors = NSToolbarItem.Identifier("colors")
         static let strokes = NSToolbarItem.Identifier("strokes")
         static let beautify = NSToolbarItem.Identifier("beautify")
+        static let upscale = NSToolbarItem.Identifier("upscale")
         static let copy = NSToolbarItem.Identifier("copy")
         static let save = NSToolbarItem.Identifier("save")
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Item.tools, .space, Item.colors, .space, Item.strokes, .flexibleSpace, Item.beautify, .space, Item.copy, Item.save]
+        // Upscale only makes sense for captures from 1× screens; Retina captures are already 2×.
+        [Item.tools, .space, Item.colors, .space, Item.strokes, .flexibleSpace]
+            + (capture.scale < 2 ? [Item.upscale] : []) + [Item.beautify, .space, Item.copy, Item.save]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -209,6 +212,12 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
             beautifyButton.action = #selector(beautifyToggled)
             item.label = "Beautify"
             view = beautifyButton
+        case Item.upscale:
+            let button = NSButton(title: "Upscale 2×", target: self, action: #selector(upscaleClicked(_:)))
+            button.bezelStyle = .toolbar
+            button.toolTip = "Sharpen this low-resolution capture to 2× with on-device AI"
+            item.label = "Upscale"
+            view = button
         case Item.copy:
             let button = NSButton(title: "Copy", target: self, action: #selector(copyClicked))
             button.bezelStyle = .toolbar
@@ -239,6 +248,29 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
     @objc private func colorChanged() { canvas.setColor(colors.selectedSegment) }
     @objc private func strokeChanged() { canvas.setStroke(Stroke(rawValue: strokes.selectedSegment) ?? .medium) }
     @objc private func copyClicked() { copyImage() }
+
+    @objc private func upscaleClicked(_ sender: NSButton) {
+        sender.isEnabled = false
+        sender.title = "Upscaling…"
+        let image = capture.image
+        Task.detached(priority: .userInitiated) {
+            let result = Result { try Upscaler.upscale2x(image) }
+            await MainActor.run {
+                switch result {
+                case .success(let upscaled):
+                    // Same size in points, twice the pixels: marks and layout stay where they are.
+                    self.capture = Capture(image: upscaled, scale: self.capture.scale * 2)
+                    self.canvas.capture = self.capture
+                    self.window.title = "Snap — \(upscaled.width) × \(upscaled.height)"
+                    sender.title = "Upscaled 2×"
+                case .failure(let error):
+                    sender.isEnabled = true
+                    sender.title = "Upscale 2×"
+                    NSAlert(error: error).beginSheetModal(for: self.window)
+                }
+            }
+        }
+    }
     @objc private func saveClicked() { saveImage() }
 
     // MARK: Beautify sidebar

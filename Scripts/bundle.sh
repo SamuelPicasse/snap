@@ -20,6 +20,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Snap "$APP/Contents/MacOS/Snap"
 strip -x "$APP/Contents/MacOS/Snap"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/"  # regenerate with: swift Scripts/make-icon.swift
+xcrun coremlcompiler compile Resources/Upscaler.mlpackage "$APP/Contents/Resources" >/dev/null  # see Scripts/make-upscaler.py
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
