@@ -6,6 +6,8 @@ enum Icons {
     static let menuBar: NSImage = {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
             NSColor.black.set()
+            // The drawing below spans x 0.7–16.2, y 0.7–15.8; center it in the 18 pt square.
+            NSGraphicsContext.current?.cgContext.translateBy(x: 0.55, y: 0.75)
             // Dashed rounded square, traced from the middle of its top edge: one dash per corner and side.
             let r = NSRect(x: 1.5, y: 1.5, width: 11, height: 11), radius: CGFloat = 2.4
             let square = NSBezierPath()
