@@ -2,10 +2,12 @@
 # Builds Snap.app into ./build. Usage: Scripts/bundle.sh [--install | --release]
 #   --install  also copies the app to ~/Applications and (re)launches it.
 #   --release  signs with Developer ID + hardened runtime, notarizes and writes build/Snap.zip
-#              to share. One-time setup: xcrun notarytool store-credentials snap-notary
+#              to share. Uses the Developer ID certificate of TEAM (default: Sammy's own team).
+#              One-time setup: xcrun notarytool store-credentials snap-notary
 # SIGN_IDENTITY overrides the codesigning identity. A stable identity keeps the
 # Screen Recording permission across rebuilds; ad-hoc ("-") re-prompts each build.
 set -euo pipefail
+TEAM="${TEAM:-UJN9G4KLA2}"
 cd "${0:A:h}/.."
 
 swift build -c release
@@ -37,7 +39,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 EOF
 
 if [[ "${1:-}" == "--release" ]]; then
-    IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application/ {print $2; exit}')}"
+    IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' -v t="($TEAM)" 'index($0, "Developer ID Application") && index($0, t) {print $2; exit}')}"
+    [[ -n "$IDENTITY" ]] || { echo "No Developer ID Application certificate for team $TEAM (Xcode → Settings → Accounts → Manage Certificates)"; exit 1; }
     codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
     ditto -c -k --keepParent "$APP" build/Snap.zip
     xcrun notarytool submit build/Snap.zip --keychain-profile snap-notary --wait

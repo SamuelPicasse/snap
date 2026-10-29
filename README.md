@@ -42,10 +42,10 @@ One-time setup:
 Scripts/bundle.sh --release
 ```
 
-Signs with the Developer ID certificate (hardened runtime), notarizes with Apple and writes `build/Snap.zip`. The recipient unzips, moves `Snap.app` to Applications and follows the one-time setup above. Needs Apple Silicon and macOS 14+.
+Signs with the Developer ID Application certificate of team `UJN9G4KLA2` (override with `TEAM=…`), hardened runtime, notarizes with Apple and writes `build/Snap.zip`. The recipient unzips, moves `Snap.app` to Applications and follows the one-time setup above. Needs Apple Silicon and macOS 14+.
 
 Once per Mac, store notarization credentials (app-specific password from appleid.apple.com):
 
 ```bash
-xcrun notarytool store-credentials snap-notary --apple-id <apple-id> --team-id M7CUSD4FD9
+xcrun notarytool store-credentials snap-notary --apple-id <apple-id> --team-id UJN9G4KLA2
 ```
