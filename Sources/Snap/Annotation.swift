@@ -2,27 +2,56 @@ import AppKit
 
 /// One drawn mark. Coordinates are in image points with a top-left origin.
 struct Annotation {
+    private static var lastID = 0
+    /// Stable identity, so arrows can stay attached to a mark while it moves.
+    var id: Int = { lastID += 1; return lastID }()
     var tool: Tool
+    /// Steps: the center. Callouts: the point the tail points at; `end` is the label's center.
     var start: CGPoint
     var end: CGPoint
     var color: NSColor
     var stroke: Stroke
     var text = ""
+    var redact = RedactStyle.blur
+    /// Arrow ends attached to another mark (by id); they follow it around.
+    var startTarget: Int?
+    var endTarget: Int?
 
     var rect: CGRect {
         CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y))
     }
 
+    var stepRadius: CGFloat { stroke.fontSize * 0.75 }
+
     /// Area the mark covers once drawn, including stroke width, arrowhead and text size.
     var bounds: CGRect {
         let w = stroke.width
         switch tool {
-        case .line, .box, .redact: return rect.insetBy(dx: -w, dy: -w)
+        case .line, .box, .redact, .spotlight: return rect.insetBy(dx: -w, dy: -w)
         case .arrow: return rect.insetBy(dx: -Renderer.arrowHead(w), dy: -Renderer.arrowHead(w))
         case .text:
             let size = (text as NSString).size(withAttributes: Renderer.textAttributes(color: color, size: stroke.fontSize))
             return CGRect(origin: start, size: size).insetBy(dx: -2, dy: -2)
+        case .step:
+            return CGRect(x: start.x - stepRadius, y: start.y - stepRadius, width: stepRadius * 2, height: stepRadius * 2)
+        case .callout:
+            return Renderer.calloutRect(self).union(CGRect(origin: start, size: .zero).insetBy(dx: -w, dy: -w))
         }
+    }
+
+    /// What an arrow attaches to: the label for callouts, otherwise everything drawn.
+    var targetRect: CGRect { tool == .callout ? Renderer.calloutRect(self) : bounds }
+
+    /// Where an arrow coming from `p` should end: just outside this mark's edge, aimed at its center.
+    func anchor(from p: CGPoint) -> CGPoint {
+        let r = targetRect, gap: CGFloat = 3
+        let dx = r.midX - p.x, dy = r.midY - p.y, length = hypot(dx, dy)
+        guard length > 0 else { return p }
+        // Distance from the center back to the edge along the line.
+        let edge = tool == .step ? stepRadius : length * min(dx == 0 ? .infinity : r.width / 2 / abs(dx),
+                                                               dy == 0 ? .infinity : r.height / 2 / abs(dy))
+        let d = max(0, length - edge - gap)
+        return CGPoint(x: p.x + dx / length * d, y: p.y + dy / length * d)
     }
 
     /// Whether a click at `p` grabs this mark. Lines and boxes only on their stroke, so you can still
@@ -31,15 +60,23 @@ struct Annotation {
         let reach = stroke.width / 2 + t
         switch tool {
         case .line, .arrow:
-            let d = CGPoint(x: end.x - start.x, y: end.y - start.y)
-            let len2 = d.x * d.x + d.y * d.y
-            let u = len2 == 0 ? 0 : max(0, min(1, ((p.x - start.x) * d.x + (p.y - start.y) * d.y) / len2))
-            return hypot(p.x - (start.x + u * d.x), p.y - (start.y + u * d.y)) <= reach
-        case .box:
+            return Self.distance(p, start, end) <= reach
+        case .box, .spotlight:
             return rect.insetBy(dx: -reach, dy: -reach).contains(p) && !rect.insetBy(dx: reach, dy: reach).contains(p)
-        case .redact, .text:
+        case .redact, .text, .step:
             return bounds.insetBy(dx: -t, dy: -t).contains(p)
+        case .callout:
+            let label = Renderer.calloutRect(self)
+            return label.insetBy(dx: -t, dy: -t).contains(p) || Self.distance(p, start, CGPoint(x: label.midX, y: label.midY)) <= reach
         }
+    }
+
+    /// Distance from `p` to the segment a–b.
+    private static func distance(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let d = CGPoint(x: b.x - a.x, y: b.y - a.y)
+        let len2 = d.x * d.x + d.y * d.y
+        let u = len2 == 0 ? 0 : max(0, min(1, ((p.x - a.x) * d.x + (p.y - a.y) * d.y) / len2))
+        return hypot(p.x - (a.x + u * d.x), p.y - (a.y + u * d.y))
     }
 
     func moved(by dx: CGFloat, _ dy: CGFloat) -> Annotation {
@@ -51,9 +88,10 @@ struct Annotation {
 
     var isEmpty: Bool {
         switch tool {
-        case .text: return text.trimmingCharacters(in: .whitespaces).isEmpty
+        case .text, .callout: return text.trimmingCharacters(in: .whitespaces).isEmpty
         case .line, .arrow: return hypot(end.x - start.x, end.y - start.y) < 3
-        case .box, .redact: return rect.width < 3 || rect.height < 3
+        case .box, .redact, .spotlight: return rect.width < 3 || rect.height < 3
+        case .step: return false
         }
     }
 }
@@ -97,7 +135,7 @@ enum Renderer {
     /// `base`, grown to include any marks that stick out of it.
     private static func grown(_ base: CGRect, by annotations: [Annotation]) -> CGRect {
         var bounds = base
-        for a in annotations where a.tool != .redact && !base.contains(a.bounds) {
+        for a in annotations where a.tool != .redact && a.tool != .spotlight && !base.contains(a.bounds) {
             bounds = bounds.union(a.bounds.insetBy(dx: -padding, dy: -padding))
         }
         return bounds.integral
@@ -139,13 +177,30 @@ enum Renderer {
     }
 
     static func draw(_ capture: Capture, _ annotations: [Annotation], in ctx: CGContext) {
-        drawImage(capture.image, in: CGRect(origin: .zero, size: capture.pointSize), ctx: ctx)
-        for annotation in annotations {
-            draw(annotation, capture: capture, ctx: ctx)
+        let image = CGRect(origin: .zero, size: capture.pointSize)
+        drawImage(capture.image, in: image, ctx: ctx)
+        for a in annotations where a.tool == .redact {
+            draw(a, capture: capture, ctx: ctx)
+        }
+        // Spotlights: dim the screenshot except inside them.
+        let spots = annotations.filter { $0.tool == .spotlight }
+        if !spots.isEmpty {
+            ctx.saveGState()
+            ctx.addRect(image)
+            for s in spots { ctx.addPath(CGPath(roundedRect: s.rect, cornerWidth: 6, cornerHeight: 6, transform: nil)) }
+            ctx.setFillColor(NSColor.black.withAlphaComponent(0.5).cgColor)
+            ctx.fillPath(using: .evenOdd)
+            ctx.restoreGState()
+        }
+        // Steps are numbered in order, so deleting one renumbers the rest.
+        var step = 0
+        for a in annotations where a.tool != .redact && a.tool != .spotlight {
+            if a.tool == .step { step += 1 }
+            draw(a, number: step, capture: capture, ctx: ctx)
         }
     }
 
-    static func draw(_ a: Annotation, capture: Capture, ctx: CGContext) {
+    static func draw(_ a: Annotation, number: Int = 0, capture: Capture, ctx: CGContext) {
         ctx.saveGState()
         defer { ctx.restoreGState() }
         ctx.setStrokeColor(a.color.cgColor)
@@ -166,8 +221,70 @@ enum Renderer {
         case .text:
             drawText(a, ctx: ctx)
         case .redact:
-            pixelate(a.rect, capture: capture, ctx: ctx)
+            switch a.redact {
+            case .blur: blur(a.rect, capture: capture, ctx: ctx)
+            case .black, .white:
+                ctx.setFillColor((a.redact == .black ? NSColor.black : .white).cgColor)
+                ctx.fill(a.rect)
+            }
+        case .step:
+            ctx.fillEllipse(in: a.bounds)
+            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: a.stepRadius * 1.1, weight: .bold),
+                                                             .foregroundColor: ink(on: a.color)]
+            let label = "\(number)" as NSString
+            let size = label.size(withAttributes: attributes)
+            drawString(label, at: CGPoint(x: a.start.x - size.width / 2, y: a.start.y - size.height / 2), attributes, ctx: ctx)
+        case .spotlight:
+            break // drawn as a whole in draw(_:_:in:)
+        case .callout:
+            drawCallout(a, ctx: ctx)
         }
+    }
+
+    /// Black or white, whichever reads best on `color`.
+    static func ink(on color: NSColor) -> NSColor {
+        let c = color.usingColorSpace(.sRGB) ?? color
+        return c.redComponent * 0.299 + c.greenComponent * 0.587 + c.blueComponent * 0.114 > 0.6 ? .black : .white
+    }
+
+    static func calloutPadding(_ fontSize: CGFloat) -> CGSize { CGSize(width: fontSize * 0.5, height: fontSize * 0.25) }
+
+    static func calloutAttributes(_ a: Annotation) -> [NSAttributedString.Key: Any] {
+        [.font: NSFont.systemFont(ofSize: a.stroke.fontSize, weight: .bold), .foregroundColor: ink(on: a.color)]
+    }
+
+    /// The callout's label bubble, centered on `end`.
+    static func calloutRect(_ a: Annotation) -> CGRect {
+        let size = (a.text as NSString).size(withAttributes: calloutAttributes(a))
+        let pad = calloutPadding(a.stroke.fontSize)
+        let width = size.width + pad.width * 2, height = max(size.height, a.stroke.fontSize) + pad.height * 2
+        return CGRect(x: a.end.x - width / 2, y: a.end.y - height / 2, width: width, height: height)
+    }
+
+    private static func drawCallout(_ a: Annotation, ctx: CGContext) {
+        let label = calloutRect(a)
+        if !label.contains(a.start) { // speech-bubble tail: a wedge from the label's center to the target
+            let dx = a.start.x - a.end.x, dy = a.start.y - a.end.y, length = hypot(dx, dy)
+            let half = min(label.width, label.height) * 0.3
+            let (nx, ny) = (-dy / length * half, dx / length * half)
+            ctx.move(to: CGPoint(x: a.end.x + nx, y: a.end.y + ny))
+            ctx.addLine(to: a.start)
+            ctx.addLine(to: CGPoint(x: a.end.x - nx, y: a.end.y - ny))
+            ctx.closePath()
+            ctx.fillPath()
+        }
+        let radius = min(8, label.height / 2)
+        ctx.addPath(CGPath(roundedRect: label, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.fillPath()
+        let pad = calloutPadding(a.stroke.fontSize)
+        drawString(a.text as NSString, at: CGPoint(x: label.minX + pad.width, y: label.minY + pad.height), calloutAttributes(a), ctx: ctx)
+    }
+
+    private static func drawString(_ string: NSString, at point: CGPoint, _ attributes: [NSAttributedString.Key: Any], ctx: CGContext) {
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        string.draw(at: point, withAttributes: attributes)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     static func textAttributes(color: NSColor, size: CGFloat) -> [NSAttributedString.Key: Any] {
@@ -198,21 +315,19 @@ enum Renderer {
     }
 
     private static func drawText(_ a: Annotation, ctx: CGContext) {
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-        (a.text as NSString).draw(at: a.start, withAttributes: textAttributes(color: a.color, size: a.stroke.fontSize))
-        NSGraphicsContext.restoreGraphicsState()
+        drawString(a.text as NSString, at: a.start, textAttributes(color: a.color, size: a.stroke.fontSize), ctx: ctx)
     }
 
-    /// Mosaic instead of blur: blur can be partially reversed, big blocks can't.
-    private static func pixelate(_ rect: CGRect, capture: Capture, ctx: CGContext) {
+    /// Shrinks the area to big averaged blocks and scales them back up smoothly. Looks like a blur, but unlike
+    /// a real blur the detail is gone for good.
+    private static func blur(_ rect: CGRect, capture: Capture, ctx: CGContext) {
         let s = capture.scale
         let bounds = CGRect(x: 0, y: 0, width: capture.image.width, height: capture.image.height)
         let pixels = CGRect(x: rect.minX * s, y: rect.minY * s, width: rect.width * s, height: rect.height * s)
             .integral.intersection(bounds)
         guard !pixels.isEmpty, let crop = capture.image.cropping(to: pixels) else { return }
 
-        let block: CGFloat = 10
+        let block: CGFloat = 8
         let cols = max(1, Int((pixels.width / s / block).rounded(.up)))
         let rows = max(1, Int((pixels.height / s / block).rounded(.up)))
         guard let small = CGContext(data: nil, width: cols, height: rows, bitsPerComponent: 8, bytesPerRow: 0,
@@ -222,7 +337,7 @@ enum Renderer {
         small.draw(crop, in: CGRect(x: 0, y: 0, width: cols, height: rows))
         guard let tiny = small.makeImage() else { return }
 
-        ctx.interpolationQuality = .none
+        ctx.interpolationQuality = .high
         drawImage(tiny, in: CGRect(x: pixels.minX / s, y: pixels.minY / s, width: pixels.width / s, height: pixels.height / s), ctx: ctx)
     }
 

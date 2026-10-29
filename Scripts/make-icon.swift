@@ -38,49 +38,54 @@ func render(_ px: Int) -> Data {
         NSGraphicsContext.restoreGraphicsState()
         return rep.representation(using: .png, properties: [:])!
     }
-    // Background: indigo → violet with a warm glow, like the app's "Grape"/"Sunset" backgrounds.
+    // Background: soft white, slightly darker toward the bottom.
     let space = CGColorSpace(name: CGColorSpace.sRGB)!
-    func c(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor { CGColor(srgbRed: r, green: g, blue: b, alpha: a) }
-    let base = CGGradient(colorsSpace: space, colors: [c(0.36, 0.30, 0.95), c(0.62, 0.25, 0.85)] as CFArray, locations: [0, 1])!
-    ctx.drawLinearGradient(base, start: CGPoint(x: 100, y: 924), end: CGPoint(x: 924, y: 100), options: [])
-    for (color, center) in [(c(1.0, 0.45, 0.55), CGPoint(x: 924, y: 100)), (c(0.30, 0.65, 1.0), CGPoint(x: 100, y: 924))] {
-        let glow = CGGradient(colorsSpace: space, colors: [color, color.copy(alpha: 0)!] as CFArray, locations: [0, 1])!
-        ctx.drawRadialGradient(glow, startCenter: center, startRadius: 0, endCenter: center, endRadius: 620, options: [])
-    }
-    // Subtle top highlight.
-    let shine = CGGradient(colorsSpace: space, colors: [c(1, 1, 1, 0.18), c(1, 1, 1, 0)] as CFArray, locations: [0, 1])!
-    ctx.drawLinearGradient(shine, start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 560), options: [])
+    func c(_ w: CGFloat, _ a: CGFloat = 1) -> CGColor { CGColor(srgbRed: w, green: w, blue: w, alpha: a) }
+    let base = CGGradient(colorsSpace: space, colors: [c(0.99), c(0.93)] as CFArray, locations: [0, 1])!
+    ctx.drawLinearGradient(base, start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 100), options: [])
     ctx.restoreGState()
 
-    // White viewfinder corners.
-    ctx.setStrokeColor(c(1, 1, 1))
-    ctx.setLineWidth(52)
-    ctx.setLineCap(.round)
-    ctx.setLineJoin(.round)
-    let (a, b, len): (CGFloat, CGFloat, CGFloat) = (262, 762, 150)
-    for (x, y, dx, dy) in [(a, a, 1.0, 1.0), (b, a, -1.0, 1.0), (a, b, 1.0, -1.0), (b, b, -1.0, -1.0)] as [(CGFloat, CGFloat, CGFloat, CGFloat)] {
-        ctx.move(to: CGPoint(x: x + dx * len, y: y))
-        ctx.addArc(tangent1End: CGPoint(x: x, y: y), tangent2End: CGPoint(x: x, y: y + dy * len), radius: 40)
-        ctx.addLine(to: CGPoint(x: x, y: y + dy * len))
-    }
-    ctx.strokePath()
+    let ink = c(0.16)
+    let raised = { ctx.setShadow(offset: CGSize(width: 0, height: -5 * s), blur: 10 * s, color: c(0, 0.3)) }
 
-    // White annotation arrow, bottom-left → top-right, with a soft shadow.
+    // Dashed selection: a rounded square traced from the middle of its top edge, so the dashes land
+    // evenly, one on each corner and two along each side.
+    let r = CGRect(x: 250, y: 312, width: 460, height: 460), radius: CGFloat = 60
+    let dashes = CGMutablePath()
+    dashes.move(to: CGPoint(x: r.midX, y: r.maxY))
+    for (corner, next) in [((r.maxX, r.maxY), (r.maxX, r.minY)), ((r.maxX, r.minY), (r.minX, r.minY)),
+                           ((r.minX, r.minY), (r.minX, r.maxY)), ((r.minX, r.maxY), (r.maxX, r.maxY))] {
+        dashes.addArc(tangent1End: CGPoint(x: corner.0, y: corner.1), tangent2End: CGPoint(x: next.0, y: next.1), radius: radius)
+    }
+    dashes.closeSubpath()
+    let period = (4 * (r.width - 2 * radius) + 2 * .pi * radius) / 12, dash: CGFloat = 70
     ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -6 * s), blur: 14 * s, color: NSColor.black.withAlphaComponent(0.3).cgColor)
-    ctx.beginTransparencyLayer(auxiliaryInfo: nil) // one shadow for shaft + head together
-    let arrow = c(1, 1, 1)
-    ctx.setStrokeColor(arrow)
-    ctx.setFillColor(arrow)
-    ctx.setLineWidth(56)
-    ctx.move(to: CGPoint(x: 372, y: 372))
-    ctx.addLine(to: CGPoint(x: 590, y: 590))
+    raised()
+    ctx.addPath(dashes)
+    ctx.setStrokeColor(ink)
+    ctx.setLineWidth(40)
+    ctx.setLineCap(.round)
+    ctx.setLineDash(phase: dash + (period - dash) / 2, lengths: [dash, period - dash])
     ctx.strokePath()
-    ctx.move(to: CGPoint(x: 680, y: 680))
-    ctx.addLine(to: CGPoint(x: 668, y: 500))
-    ctx.addLine(to: CGPoint(x: 500, y: 668))
-    ctx.closePath()
-    ctx.setLineWidth(24)
+    ctx.restoreGState()
+
+    // Mouse pointer over the bottom-right corner, with a white edge where it crosses the dashes.
+    let pointer = CGMutablePath()
+    pointer.addLines(between: [(612, 520), (640, 780), (705, 725), (758, 812), (806, 788), (752, 700), (842, 686)]
+        .map { CGPoint(x: $0.0, y: 1024 - $0.1) })
+    pointer.closeSubpath()
+    ctx.setLineJoin(.round)
+    ctx.addPath(pointer)
+    ctx.setStrokeColor(c(0.97))
+    ctx.setLineWidth(64)
+    ctx.strokePath()
+    ctx.saveGState()
+    raised()
+    ctx.beginTransparencyLayer(auxiliaryInfo: nil) // one shadow for fill + rounded edge together
+    ctx.addPath(pointer)
+    ctx.setFillColor(ink)
+    ctx.setStrokeColor(ink)
+    ctx.setLineWidth(28)
     ctx.drawPath(using: .fillStroke)
     ctx.endTransparencyLayer()
     ctx.restoreGState()

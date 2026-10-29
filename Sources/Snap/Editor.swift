@@ -29,6 +29,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     private(set) var tool = Settings.tool
     private(set) var colorIndex = Settings.colorIndex
     private(set) var stroke = Settings.stroke
+    private(set) var redactStyle = Settings.redactStyle
 
     var style: Beautify { didSet { needsDisplay = true } }
 
@@ -37,10 +38,12 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     private var undoStack: [[Annotation]] = []
     private var redoStack: [[Annotation]] = []
     private var textField: NSTextField?
-    private var textOrigin: CGPoint = .zero
-    /// Selected mark (click on it), and the drag that moves it.
+    /// The text or callout being typed, and its index when editing an existing one (hidden meanwhile).
+    private var editing: (mark: Annotation, index: Int?)?
+    /// Selected mark (click on it), and the drag that moves it or one of its handles.
     private var selected: Int?
-    private var move: (start: CGPoint, original: Annotation, moved: Bool)?
+    private enum Drag { case move(from: CGPoint, original: Annotation), handle(end: Bool) }
+    private var drag: (kind: Drag, changed: Bool)?
 
     /// Image coordinates → view: view = image * zoom + offset. Recomputed on every draw so the whole
     /// export (which grows with padding, aspect ratio and outside marks) always fits in view.
@@ -92,7 +95,12 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         updateTransform()
-        let marks = annotations + (current.map { [$0] } ?? [])
+        var marks = annotations.indices.filter { $0 != editing?.index }.map { annotations[$0] } + (current.map { [$0] } ?? [])
+        // A callout being typed shows its bubble and tail live; the text field sits on top.
+        if var typing = editing?.mark, typing.tool == .callout, let field = textField {
+            typing.text = field.stringValue
+            marks.append(typing)
+        }
 
         // Workspace: slightly lighter than the window, so you can see where you can draw.
         ctx.setFillColor(NSColor(white: 0.19, alpha: 1).cgColor)
@@ -114,6 +122,15 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             ctx.setLineWidth(1.5 / zoom)
             ctx.setLineDash(phase: 0, lengths: [4 / zoom, 3 / zoom])
             ctx.stroke(annotations[i].bounds.insetBy(dx: -4 / zoom, dy: -4 / zoom))
+            if annotations[i].tool.hasHandles {
+                ctx.setLineDash(phase: 0, lengths: [])
+                ctx.setFillColor(NSColor.white.cgColor)
+                for p in [annotations[i].start, annotations[i].end] {
+                    let r = 4 / zoom
+                    ctx.addEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2))
+                }
+                ctx.drawPath(using: .fillStroke)
+            }
         }
     }
 
@@ -133,7 +150,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         colorIndex = index
         Settings.colorIndex = index
         editSelected { $0.color = Palette.colors[index] }
-        textField?.textColor = color
+        editing?.mark.color = color
+        styleField()
         onToolChange?()
     }
 
@@ -141,7 +159,15 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         self.stroke = stroke
         Settings.stroke = stroke
         editSelected { $0.stroke = stroke }
-        textField?.font = .systemFont(ofSize: stroke.fontSize * zoom, weight: .bold)
+        editing?.mark.stroke = stroke
+        styleField()
+        onToolChange?()
+    }
+
+    func setRedactStyle(_ style: RedactStyle) {
+        redactStyle = style
+        Settings.redactStyle = style
+        if let i = selected, i < annotations.count, annotations[i].tool == .redact { editSelected { $0.redact = style } }
         onToolChange?()
     }
 
@@ -151,11 +177,47 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         undoStack.append(annotations)
         redoStack.removeAll()
         change(&annotations[i])
+        reattach()
         needsDisplay = true
     }
 
     private func hitIndex(_ p: CGPoint) -> Int? {
         annotations.indices.reversed().first { annotations[$0].hit(p, tolerance: 5 / zoom) }
+    }
+
+    // MARK: Attached arrows
+
+    /// Attach the arrow's ends to the marks they were dropped on.
+    private func attach(_ i: Int) {
+        guard annotations[i].tool == .arrow else { return }
+        func target(at p: CGPoint) -> Int? {
+            annotations.indices.reversed().first { j in
+                j != i && annotations[j].tool != .line && annotations[j].tool != .arrow
+                    && annotations[j].targetRect.insetBy(dx: -6, dy: -6).contains(p)
+            }.map { annotations[$0].id }
+        }
+        let a = annotations[i]
+        annotations[i].startTarget = target(at: a.start)
+        annotations[i].endTarget = target(at: a.end)
+        if annotations[i].startTarget == annotations[i].endTarget { annotations[i].startTarget = nil }
+        reattach()
+    }
+
+    /// Keep attached arrow ends on the edge of their target after it changed; let go of deleted targets.
+    private func reattach() {
+        let byID = Dictionary(annotations.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for i in annotations.indices where annotations[i].tool == .arrow {
+            var a = annotations[i]
+            let s = a.startTarget.flatMap { byID[$0] }, e = a.endTarget.flatMap { byID[$0] }
+            guard s != nil || e != nil || a.startTarget != nil || a.endTarget != nil else { continue }
+            a.startTarget = s?.id
+            a.endTarget = e?.id
+            func center(_ t: Annotation) -> CGPoint { CGPoint(x: t.targetRect.midX, y: t.targetRect.midY) }
+            let startFrom = e.map(center) ?? a.end, endFrom = s.map(center) ?? a.start
+            if let s { a.start = s.anchor(from: startFrom) }
+            if let e { a.end = e.anchor(from: endFrom) }
+            annotations[i] = a
+        }
     }
 
     // MARK: Undo
@@ -195,10 +257,22 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     override func mouseDown(with event: NSEvent) {
         commitText()
         let p = imagePoint(event)
+        // Handles of the selected mark reshape it.
+        if let i = selected, i < annotations.count, annotations[i].tool.hasHandles {
+            let a = annotations[i]
+            for (end, q) in [(false, a.start), (true, a.end)] where hypot(p.x - q.x, p.y - q.y) <= 7 / zoom {
+                drag = (.handle(end: end), false)
+                return
+            }
+        }
         // Clicking a mark selects it (drag to move, Delete to remove) instead of drawing over it.
         if let i = hitIndex(p) {
+            if event.clickCount == 2, annotations[i].tool == .text || annotations[i].tool == .callout {
+                selected = nil
+                return beginText(annotations[i], index: i)
+            }
             selected = i
-            move = (p, annotations[i], false)
+            drag = (.move(from: p, original: annotations[i]), false)
             NSCursor.closedHand.set()
             needsDisplay = true
             return
@@ -207,22 +281,34 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             selected = nil
             needsDisplay = true
         }
-        if tool == .text {
-            beginText(at: p)
-        } else {
-            current = Annotation(tool: tool, start: p, end: p, color: color, stroke: stroke)
+        let mark = Annotation(tool: tool, start: p, end: p, color: color, stroke: stroke, redact: redactStyle)
+        switch tool {
+        case .text: beginText(mark, index: nil)
+        case .step: push(mark)
+        default: current = mark
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        if let m = move, let i = selected {
-            if !m.moved {
+        if let d = drag, let i = selected {
+            if !d.changed {
                 undoStack.append(annotations)
                 redoStack.removeAll()
-                move?.moved = true
+                drag?.changed = true
             }
             let p = imagePoint(event)
-            annotations[i] = m.original.moved(by: p.x - m.start.x, p.y - m.start.y)
+            switch d.kind {
+            case .move(let from, let original):
+                var a = original.moved(by: p.x - from.x, p.y - from.y)
+                if a.tool == .arrow { (a.startTarget, a.endTarget) = (nil, nil) }
+                annotations[i] = a
+            case .handle(let end):
+                var a = annotations[i]
+                let q = constrained(from: end ? a.start : a.end, to: p, shift: event.modifierFlags.contains(.shift), tool: a.tool)
+                if end { (a.end, a.endTarget) = (q, nil) } else { (a.start, a.startTarget) = (q, nil) }
+                annotations[i] = a
+            }
+            reattach()
             needsDisplay = true
             return
         }
@@ -233,14 +319,19 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if move != nil {
-            move = nil
-            NSCursor.openHand.set()
+        if let d = drag {
+            drag = nil
+            if d.changed, let i = selected { attach(i) }
+            if case .move = d.kind { NSCursor.openHand.set() }
+            needsDisplay = true
             return
         }
         guard let a = current else { return }
         current = nil
-        if a.isEmpty { needsDisplay = true } else { push(a) }
+        if a.tool == .callout { return beginText(a, index: nil) }
+        if a.isEmpty { return needsDisplay = true }
+        push(a)
+        attach(annotations.count - 1)
     }
 
     /// Shift snaps lines/arrows to 45° steps and boxes to squares.
@@ -248,15 +339,15 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         guard shift else { return end }
         let dx = end.x - start.x, dy = end.y - start.y
         switch tool {
-        case .line, .arrow:
+        case .line, .arrow, .callout:
             let step = CGFloat.pi / 4
             let angle = (atan2(dy, dx) / step).rounded() * step
             let length = hypot(dx, dy)
             return CGPoint(x: start.x + cos(angle) * length, y: start.y + sin(angle) * length)
-        case .box, .redact:
+        case .box, .redact, .spotlight:
             let side = max(abs(dx), abs(dy))
             return CGPoint(x: start.x + (dx < 0 ? -side : side), y: start.y + (dy < 0 ? -side : side))
-        case .text:
+        case .text, .step:
             return end
         }
     }
@@ -280,11 +371,13 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             undoStack.append(annotations)
             redoStack.removeAll()
             annotations.remove(at: selected.map { min($0, annotations.count - 1) } ?? annotations.count - 1)
+            reattach()
             selected = nil
             needsDisplay = true
             return
         }
         if let t = Tool.allCases.first(where: { $0.key == key }) { return setTool(t) }
+        if tool == .redact, let n = Int(key), (1...RedactStyle.allCases.count).contains(n) { return setRedactStyle(RedactStyle(rawValue: n - 1)!) }
         if let n = Int(key), (1...Palette.colors.count).contains(n) { return setColor(n - 1) }
         if key == "[" { return setStroke(Stroke(rawValue: max(0, stroke.rawValue - 1))!) }
         if key == "]" { return setStroke(Stroke(rawValue: min(2, stroke.rawValue + 1))!) }
@@ -293,49 +386,78 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     // MARK: Text
 
-    private func beginText(at point: CGPoint) {
-        textOrigin = point
-        let field = NSTextField(string: "")
+    /// Type a new text or callout label, or edit an existing one (double-click) at `index`.
+    private func beginText(_ mark: Annotation, index: Int?) {
+        editing = (mark, index)
+        let field = NSTextField(string: mark.text)
         field.isBordered = false
-        field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: stroke.fontSize * zoom, weight: .bold)
-        field.textColor = color
         field.delegate = self
         field.cell?.wraps = false
         field.cell?.isScrollable = true
-        let height = ceil(stroke.fontSize * zoom * 1.4)
-        // NSTextField insets its text ~2pt; shift left so the committed text lands where it was typed.
-        let x = offset.x + point.x * zoom, y = offset.y + point.y * zoom
-        field.frame = NSRect(x: x - 2, y: y, width: max(80, bounds.width - x), height: height)
         addSubview(field)
-        window?.makeFirstResponder(field)
         textField = field
+        styleField()
+        window?.makeFirstResponder(field)
+        needsDisplay = true
+    }
+
+    /// Font, colors and frame of the text field, following the mark being typed.
+    private func styleField() {
+        guard let field = textField, let mark = editing?.mark else { return }
+        let callout = mark.tool == .callout
+        field.font = .systemFont(ofSize: mark.stroke.fontSize * zoom, weight: .bold)
+        field.drawsBackground = callout
+        field.backgroundColor = mark.color
+        field.textColor = callout ? Renderer.ink(on: mark.color) : mark.color
+        let pad = callout ? Renderer.calloutPadding(mark.stroke.fontSize) : .zero
+        var typing = mark
+        typing.text = field.stringValue
+        let label = Renderer.calloutRect(typing)
+        let origin = callout ? CGPoint(x: label.minX + pad.width, y: label.minY + pad.height) : mark.start
+        let height = ceil(mark.stroke.fontSize * zoom * 1.4)
+        // NSTextField insets its text ~2pt; shift left so the committed text lands where it was typed.
+        let x = offset.x + origin.x * zoom, y = offset.y + origin.y * zoom
+        let typed = (field.stringValue as NSString).size(withAttributes: [.font: field.font!]).width
+        field.frame = NSRect(x: x - 2, y: y, width: callout ? max(40, ceil(typed) + 12) : max(80, bounds.width - x), height: height)
     }
 
     func commitText() {
-        guard let field = textField else { return }
-        textField = nil
-        let text = field.stringValue
-        field.delegate = nil
-        field.removeFromSuperview()
-        window?.makeFirstResponder(self)
-        let a = Annotation(tool: .text, start: textOrigin, end: textOrigin, color: color, stroke: stroke, text: text)
-        if !a.isEmpty { push(a) }
+        guard let field = textField, var mark = editing?.mark else { return }
+        let index = editing?.index
+        endText()
+        mark.text = field.stringValue
+        if let index {
+            let old = annotations[index]
+            guard mark.text != old.text || mark.color != old.color || mark.stroke != old.stroke else { return }
+            undoStack.append(annotations)
+            redoStack.removeAll()
+            if mark.isEmpty { annotations.remove(at: index) } else { annotations[index] = mark }
+            reattach()
+        } else if !mark.isEmpty {
+            push(mark)
+        }
     }
 
-    private func cancelText() {
+    private func endText() {
         guard let field = textField else { return }
         textField = nil
+        editing = nil
         field.delegate = nil
         field.removeFromSuperview()
         window?.makeFirstResponder(self)
+        needsDisplay = true
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        styleField()
+        needsDisplay = true
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)): commitText(); return true
-        case #selector(NSResponder.cancelOperation(_:)): cancelText(); return true
+        case #selector(NSResponder.cancelOperation(_:)): endText(); return true
         default: return false
         }
     }

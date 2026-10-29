@@ -179,13 +179,7 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
             item.label = "Tools"
             view = tools
         case Item.colors:
-            colors.segmentCount = Palette.colors.count
             colors.trackingMode = .selectOne
-            for (i, color) in Palette.colors.enumerated() {
-                colors.setImage(swatch(color), forSegment: i)
-                colors.setToolTip("Color (\(i + 1))", forSegment: i)
-                colors.setWidth(24, forSegment: i)
-            }
             colors.target = self
             colors.action = #selector(colorChanged)
             item.label = "Color"
@@ -238,14 +232,45 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         return item
     }
 
+    /// The color picker doubles as the blur/black/white picker while redacting.
+    private var colorsShowRedact: Bool?
+
     private func syncToolbar() {
         tools.selectedSegment = canvas.tool.rawValue
-        colors.selectedSegment = canvas.colorIndex
+        let redact = canvas.tool == .redact
+        if colorsShowRedact != redact {
+            colorsShowRedact = redact
+            if redact {
+                colors.segmentCount = RedactStyle.allCases.count
+                for style in RedactStyle.allCases {
+                    colors.setImage(nil, forSegment: style.rawValue)
+                    colors.setLabel(style.title, forSegment: style.rawValue)
+                    colors.setToolTip("\(style.title) (\(style.rawValue + 1))", forSegment: style.rawValue)
+                    colors.setWidth(0, forSegment: style.rawValue)
+                }
+            } else {
+                colors.segmentCount = Palette.colors.count
+                for (i, color) in Palette.colors.enumerated() {
+                    colors.setLabel("", forSegment: i)
+                    colors.setImage(swatch(color), forSegment: i)
+                    colors.setToolTip("Color (\(i + 1))", forSegment: i)
+                    colors.setWidth(24, forSegment: i)
+                }
+            }
+            colors.sizeToFit()
+        }
+        colors.selectedSegment = redact ? canvas.redactStyle.rawValue : canvas.colorIndex
         strokes.selectedSegment = canvas.stroke.rawValue
     }
 
     @objc private func toolChanged() { canvas.setTool(Tool(rawValue: tools.selectedSegment) ?? .arrow) }
-    @objc private func colorChanged() { canvas.setColor(colors.selectedSegment) }
+    @objc private func colorChanged() {
+        if canvas.tool == .redact {
+            canvas.setRedactStyle(RedactStyle(rawValue: colors.selectedSegment) ?? .blur)
+        } else {
+            canvas.setColor(colors.selectedSegment)
+        }
+    }
     @objc private func strokeChanged() { canvas.setStroke(Stroke(rawValue: strokes.selectedSegment) ?? .medium) }
     @objc private func copyClicked() { copyImage() }
 

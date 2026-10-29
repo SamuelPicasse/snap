@@ -2,13 +2,28 @@ import AppKit
 import Carbon
 
 enum Tool: Int, CaseIterable {
-    case line, arrow, box, text, redact
+    case line, arrow, box, text, redact, step, callout, spotlight
 
-    var key: String { ["l", "a", "r", "t", "b"][rawValue] }
+    var key: String { ["l", "a", "r", "t", "b", "n", "c", "s"][rawValue] }
     var symbol: String {
-        ["line.diagonal", "arrow.up.right", "rectangle", "textformat", "checkerboard.rectangle"][rawValue]
+        ["line.diagonal", "arrow.up.right", "rectangle", "textformat", "checkerboard.rectangle",
+         "1.circle", "text.bubble", "flashlight.on.fill"][rawValue]
     }
-    var label: String { ["Line (L)", "Arrow (A)", "Box (R)", "Text (T)", "Redact (B)"][rawValue] }
+    var label: String {
+        ["Line (L)", "Arrow (A) — drop an end on a mark to attach it", "Box (R)", "Text (T)",
+         "Redact (B) — blur, or black/white to cover completely",
+         "Numbered step (N)", "Callout (C) — drag from the target to the label", "Spotlight (S)"][rawValue]
+    }
+    /// Marks you can reshape by dragging their start/end handles.
+    var hasHandles: Bool { self != .text && self != .step }
+}
+
+/// How a redact mark hides what's under it. Black and white cover it completely; blur can't be read back either,
+/// because it's built from big averaged blocks.
+enum RedactStyle: Int, CaseIterable {
+    case blur, black, white
+
+    var title: String { ["Blur", "Black", "White"][rawValue] }
 }
 
 enum CaptureMode: Int, CaseIterable {
@@ -82,6 +97,11 @@ enum Settings {
     static var tool: Tool {
         get { Tool(rawValue: defaults.integer(forKey: "tool")) ?? .arrow }
         set { defaults.set(newValue.rawValue, forKey: "tool") }
+    }
+
+    static var redactStyle: RedactStyle {
+        get { RedactStyle(rawValue: defaults.integer(forKey: "redactStyle")) ?? .blur }
+        set { defaults.set(newValue.rawValue, forKey: "redactStyle") }
     }
 
     static var colorIndex: Int {
