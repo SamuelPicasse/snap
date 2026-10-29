@@ -11,7 +11,7 @@ cask "snap" do
 
   auto_updates true # Snap updates itself from GitHub Releases
   depends_on arch: :arm64
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "Snap.app"
 
