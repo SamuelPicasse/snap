@@ -1,6 +1,5 @@
 import AppKit
 import Carbon
-import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -9,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var selection: SelectionController?
     private var editors: [EditorWindowController] = []
     private var replacingEditor = false
+    private lazy var settings = SettingsWindowController(hotKeyRegistered: { [weak self] in self?.hotKey?.registered == true },
+                                                         checkForUpdates: { [weak self] in self?.checkForUpdates(userInitiated: true) })
     /// The last screenshot and its marks, kept after the editor closes so an accidental Esc or
     /// close can be undone. Stored as PNG: a cropped CGImage would keep the whole frozen screen alive.
     private var last: (png: Data, scale: CGFloat, annotations: [Annotation])?
@@ -50,28 +51,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let reopen = NSMenuItem(title: "Reopen Last Screenshot", action: last == nil ? nil : #selector(reopenLast), keyEquivalent: "")
         menu.addItem(reopen)
         if hotKey?.registered != true {
-            let warning = NSMenuItem(title: "⚠︎ ⌘⇧3 is taken — disable it in Keyboard Shortcuts", action: #selector(openKeyboardSettings), keyEquivalent: "")
+            let warning = NSMenuItem(title: "⚠︎ ⌘⇧3 is taken by macOS…", action: #selector(openSettings), keyEquivalent: "")
             menu.addItem(warning)
         }
         menu.addItem(.separator())
-
-        let retina = NSMenuItem(title: "Retina Resolution", action: #selector(setRetina), keyEquivalent: "")
-        retina.state = Settings.retina ? .on : .off
-        menu.addItem(retina)
-        let standard = NSMenuItem(title: "1× Resolution (smaller)", action: #selector(setStandard), keyEquivalent: "")
-        standard.state = Settings.retina ? .off : .on
-        menu.addItem(standard)
-        let lossless = NSMenuItem(title: "Lossless (sharper, larger files)", action: #selector(toggleLossless), keyEquivalent: "")
-        lossless.state = Settings.lossless ? .on : .off
-        menu.addItem(lossless)
-        menu.addItem(.separator())
-
-        menu.addItem(NSMenuItem(title: "Save Folder: \(Settings.saveFolder.lastPathComponent)…", action: #selector(chooseFolder), keyEquivalent: ""))
-        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(login)
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Check for Updates… (\(Updater.current))", action: #selector(checkForUpdatesFromMenu), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Quit Snap", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         for item in menu.items where item.action != #selector(NSApplication.terminate(_:)) { item.target = self }
@@ -82,42 +66,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.capture() }
     }
 
-    @objc private func setRetina() { Settings.retina = true }
-    @objc private func setStandard() { Settings.retina = false }
-    @objc private func toggleLossless() { Settings.lossless.toggle() }
-
-    @objc private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = Settings.saveFolder
-        panel.prompt = "Choose"
-        NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url { Settings.saveFolder = url }
+    @objc private func openSettings() {
+        settings.show()
     }
-
-    @objc private func toggleLogin() {
-        do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
-            }
-        } catch {
-            showAlert("Couldn't change Launch at Login", error.localizedDescription)
-        }
-    }
-
-    @objc private func checkForUpdatesFromMenu() { checkForUpdates(userInitiated: true) }
 
     private func checkForUpdates(userInitiated: Bool) {
         guard userInitiated || (editors.isEmpty && selection == nil) else { return }
         Task { await Updater.check(userInitiated: userInitiated) }
-    }
-
-    @objc private func openKeyboardSettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
     }
 
     // MARK: Capture flow
