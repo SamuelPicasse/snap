@@ -17,8 +17,8 @@ enum CaptureMode: Int, CaseIterable {
     var title: String { ["Capture Area", "Capture Screen"][rawValue] }
     /// macOS's own screenshot shortcuts — free them in System Settings to use them for Snap.
     var defaultShortcut: Settings.Shortcut {
-        [Settings.Shortcut(keyCode: UInt32(kVK_ANSI_3), modifiers: UInt32(cmdKey | shiftKey), label: "⌘⇧3"),
-         Settings.Shortcut(keyCode: UInt32(kVK_ANSI_4), modifiers: UInt32(cmdKey | shiftKey), label: "⌘⇧4")][rawValue]
+        [Settings.Shortcut(keyCode: UInt32(kVK_ANSI_3), modifiers: UInt32(cmdKey | shiftKey), label: "⇧⌘3"),
+         Settings.Shortcut(keyCode: UInt32(kVK_ANSI_4), modifiers: UInt32(cmdKey | shiftKey), label: "⇧⌘4")][rawValue]
     }
 }
 

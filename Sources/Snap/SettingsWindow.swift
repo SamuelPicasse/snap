@@ -10,7 +10,7 @@ final class SettingsWindowController: NSObject {
     private let lossless = NSButton(checkboxWithTitle: "Lossless (sharper, larger files)", target: nil, action: nil)
     private let folder = NSTextField(labelWithString: "")
     private let login = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
-    private var recording: Any?
+    private var recorder: ShortcutRecorder? // the one currently recording
     private let hotKeyRegistered: (CaptureMode) -> Bool
     private let setHotKeysEnabled: (Bool) -> Void
     private let checkForUpdates: () -> Void
@@ -54,7 +54,7 @@ final class SettingsWindowController: NSObject {
         func row(_ views: NSView...) -> NSStackView { NSStackView(views: views) }
         /// Click-to-record button, plus a warning when the shortcut can't be registered.
         func shortcutRow(_ mode: CaptureMode) -> NSStackView {
-            let recorder = NSButton(title: Settings.shortcut(mode).label, target: self, action: #selector(recordShortcut(_:)))
+            let recorder = ShortcutRecorder(title: Settings.shortcut(mode).label, target: self, action: #selector(recordShortcut(_:)))
             recorder.tag = mode.rawValue
             recorder.toolTip = "Click, then press a new shortcut (Esc cancels)"
             let taken = label("Taken by macOS or another app")
@@ -91,35 +91,45 @@ final class SettingsWindowController: NSObject {
         window.contentView = content
     }
 
-    /// Next key press with ⌘, ⌃ or ⌥ becomes the capture shortcut; Esc cancels.
-    @objc private func recordShortcut(_ recorder: NSButton) {
-        guard recording == nil, let mode = CaptureMode(rawValue: recorder.tag) else { return }
-        recorder.title = "Type shortcut…"
+    /// Next key press with ⌘ or ⌃ becomes the shortcut; Esc cancels.
+    @objc private func recordShortcut(_ sender: ShortcutRecorder) {
+        guard recorder == nil, let mode = CaptureMode(rawValue: sender.tag) else { return }
+        recorder = sender
+        sender.title = "Type shortcut…"
         setHotKeysEnabled(false) // otherwise pressing an existing shortcut would start a capture
-        recording = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
+        sender.onKey = { [weak self, weak sender] event in
+            guard let self, let sender else { return }
+            guard event.keyCode != 53 else { return self.stopRecording() } // Esc
             let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
-            if event.keyCode == 53 || !flags.intersection([.command, .control, .option]).isEmpty {
-                if event.keyCode != 53 {
-                    let carbon = [(NSEvent.ModifierFlags.control, controlKey, "⌃"), (.option, optionKey, "⌥"),
-                                  (.shift, shiftKey, "⇧"), (.command, cmdKey, "⌘")].filter { flags.contains($0.0) }
-                    let key = event.charactersIgnoringModifiers?.uppercased() ?? "?"
-                    Settings.setShortcut(Settings.Shortcut(keyCode: UInt32(event.keyCode),
-                                                           modifiers: UInt32(carbon.reduce(0) { $0 | $1.1 }),
-                                                           label: carbon.map(\.2).joined() + key), for: mode)
-                }
-                self.stopRecording()
-                self.build()
+            // macOS only allows global shortcuts that include ⌘ or ⌃ (⌥/⌥⇧-only ones are refused).
+            guard !flags.isDisjoint(with: [.command, .control]) else {
+                sender.title = "Include ⌘ or ⌃…"
+                return NSSound.beep()
             }
-            return nil // swallow key presses while recording
+            let carbon = [(NSEvent.ModifierFlags.control, controlKey, "⌃"), (.option, optionKey, "⌥"),
+                          (.shift, shiftKey, "⇧"), (.command, cmdKey, "⌘")].filter { flags.contains($0.0) }
+            Settings.setShortcut(Settings.Shortcut(keyCode: UInt32(event.keyCode),
+                                                   modifiers: UInt32(carbon.reduce(0) { $0 | $1.1 }),
+                                                   label: carbon.map(\.2).joined() + Self.keyName(event)), for: mode)
+            self.stopRecording()
         }
+        window.makeFirstResponder(sender)
     }
 
     private func stopRecording() {
-        guard let recording else { return }
-        NSEvent.removeMonitor(recording)
-        self.recording = nil
+        guard let recorder else { return }
+        recorder.onKey = nil
+        self.recorder = nil
         setHotKeysEnabled(true)
+        build()
+    }
+
+    /// The key itself, without Shift applied ("2", not "@").
+    private static func keyName(_ event: NSEvent) -> String {
+        let names: [UInt16: String] = [49: "Space", 36: "↩", 48: "⇥", 51: "⌫", 123: "←", 124: "→", 125: "↓", 126: "↑",
+                                       122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+                                       98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12"]
+        return names[event.keyCode] ?? event.characters(byApplyingModifiers: [])?.uppercased() ?? "?"
     }
 
     @objc private func resolutionChanged() { Settings.retina = resolution.indexOfSelectedItem == 0 }
@@ -151,5 +161,23 @@ final class SettingsWindowController: NSObject {
 
     @objc private func openKeyboardSettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
+    }
+}
+
+/// Button that, while recording, receives every key press — including ⌘ combos, which AppKit
+/// routes through performKeyEquivalent and never delivers as a plain keyDown.
+final class ShortcutRecorder: NSButton {
+    var onKey: ((NSEvent) -> Void)?
+
+    override var acceptsFirstResponder: Bool { onKey != nil }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard let onKey, event.type == .keyDown else { return super.performKeyEquivalent(with: event) }
+        onKey(event)
+        return true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if let onKey { onKey(event) } else { super.keyDown(with: event) }
     }
 }
