@@ -97,17 +97,29 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
     // MARK: Actions
 
     func copyImage() {
-        canvas.commitText()
-        guard let png = export() else { return }
-        let board = NSPasteboard.general
-        board.clearContents()
-        board.setData(png, forType: .png)
-        window.close()
+        exportHidden { png in
+            let board = NSPasteboard.general
+            board.clearContents()
+            board.setData(png, forType: .png)
+            return true
+        }
     }
 
     func saveImage() {
+        exportHidden { png in self.write(png) }
+    }
+
+    /// Hides the editor first so it feels instant, then encodes (quantizing takes a moment) and closes.
+    /// If encoding or `finish` fails, the editor comes back.
+    private func exportHidden(_ finish: @escaping (Data) -> Bool) {
         canvas.commitText()
-        guard let png = export() else { return }
+        window.orderOut(nil)
+        DispatchQueue.main.async { [self] in
+            if let png = export(), finish(png) { window.close() } else { show() }
+        }
+    }
+
+    private func write(_ png: Data) -> Bool {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
         let base = "Screenshot \(formatter.string(from: Date()))"
@@ -119,9 +131,10 @@ final class EditorWindowController: NSObject, NSWindowDelegate, NSToolbarDelegat
         }
         do {
             try png.write(to: url)
-            window.close()
+            return true
         } catch {
             NSAlert(error: error).runModal()
+            return false
         }
     }
 
